@@ -1,0 +1,5 @@
+# Windows: sin dependencias externas (stdlib + ctypes).
+# Linux (opcional, para input X11):
+#   - python-xlib   ->  pip install python-xlib      (preferido)
+#   - o xdotool     ->  apt install xdotool
+# Memoria en Linux usa /proc/<pid>/mem + ptrace (stdlib).
