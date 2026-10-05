@@ -19,18 +19,55 @@
     },
     "player": {
       "fields": {
-        "name": {"offset": "0x0", "type": "str", "len": 32},
-        "x": {"offset": "0x0", "type": "i32"},
-        "y": {"offset": "0x0", "type": "i32"},
-        "z": {"offset": "0x0", "type": "i32"},
-        "hp": {"offset": "0x0", "type": "i32"},
-        "max_hp": {"offset": "0x0", "type": "i32"},
-        "mp": {"offset": "0x0", "type": "i32"},
-        "max_mp": {"offset": "0x0", "type": "i32"},
-        "level": {"offset": "0x0", "type": "i32"},
-        "exp": {"offset": "0x0", "type": "i32"},
-        "direction": {"offset": "0x0", "type": "u8"},
-        "alive": {"offset": "0x0", "type": "bool"}
+        "name": {
+          "offset": "0x0",
+          "type": "str",
+          "len": 32
+        },
+        "x": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "y": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "z": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "hp": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "max_hp": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "mp": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "max_mp": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "level": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "exp": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "direction": {
+          "offset": "0x0",
+          "type": "u8"
+        },
+        "alive": {
+          "offset": "0x0",
+          "type": "bool"
+        }
       }
     },
     "battle_list": {
@@ -39,22 +76,62 @@
       "deref": true,
       "pointer_array": true,
       "stride": "0x8",
-      "count": {"offset": "0x0", "type": "u16"},
+      "count": {
+        "offset": "0x0",
+        "type": "u16"
+      },
       "count_fixed": 0,
       "max_entries": 250,
       "fields": {
-        "id": {"offset": "0x0", "type": "i32"},
-        "name": {"offset": "0x0", "type": "str", "len": 32},
-        "x": {"offset": "0x0", "type": "i32"},
-        "y": {"offset": "0x0", "type": "i32"},
-        "z": {"offset": "0x0", "type": "i32"},
-        "hp_pct": {"offset": "0x0", "type": "u8"},
-        "kind": {"offset": "0x0", "type": "u8"},
-        "is_player": {"offset": "0x0", "type": "bool"},
-        "is_npc": {"offset": "0x0", "type": "bool"},
-        "is_summon": {"offset": "0x0", "type": "bool"},
-        "is_wild": {"offset": "0x0", "type": "bool"},
-        "is_self": {"offset": "0x0", "type": "bool"}
+        "id": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "name": {
+          "offset": "0x0",
+          "type": "str",
+          "len": 32
+        },
+        "x": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "y": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "z": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "hp_pct": {
+          "offset": "0x0",
+          "type": "u8"
+        },
+        "kind": {
+          "offset": "0x0",
+          "type": "u8"
+        },
+        "is_player": {
+          "offset": "0x0",
+          "type": "bool"
+        },
+        "is_npc": {
+          "offset": "0x0",
+          "type": "bool"
+        },
+        "is_summon": {
+          "offset": "0x0",
+          "type": "bool"
+        },
+        "is_wild": {
+          "offset": "0x0",
+          "type": "bool"
+        },
+        "is_self": {
+          "offset": "0x0",
+          "type": "bool"
+        }
       }
     },
     "party": {
@@ -66,13 +143,35 @@
       "count_fixed": 6,
       "max_entries": 6,
       "fields": {
-        "slot": {"offset": "0x0", "type": "i32"},
-        "name": {"offset": "0x0", "type": "str", "len": 32},
-        "hp_pct": {"offset": "0x0", "type": "u8"},
-        "level": {"offset": "0x0", "type": "i32"},
-        "active": {"offset": "0x0", "type": "bool"},
-        "alive": {"offset": "0x0", "type": "bool"},
-        "in_field": {"offset": "0x0", "type": "bool"}
+        "slot": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "name": {
+          "offset": "0x0",
+          "type": "str",
+          "len": 32
+        },
+        "hp_pct": {
+          "offset": "0x0",
+          "type": "u8"
+        },
+        "level": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "active": {
+          "offset": "0x0",
+          "type": "bool"
+        },
+        "alive": {
+          "offset": "0x0",
+          "type": "bool"
+        },
+        "in_field": {
+          "offset": "0x0",
+          "type": "bool"
+        }
       }
     },
     "inventory": {
@@ -84,9 +183,19 @@
       "count_fixed": 0,
       "max_entries": 20,
       "fields": {
-        "item_id": {"offset": "0x0", "type": "i32"},
-        "count": {"offset": "0x0", "type": "i32"},
-        "name": {"offset": "0x0", "type": "str", "len": 32}
+        "item_id": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "count": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "name": {
+          "offset": "0x0",
+          "type": "str",
+          "len": 32
+        }
       }
     },
     "map": {
@@ -97,56 +206,82 @@
       "stride": "0x8",
       "radius": 8,
       "fields": {
-        "x": {"offset": "0x0", "type": "i32"},
-        "y": {"offset": "0x0", "type": "i32"},
-        "walkable": {"offset": "0x0", "type": "bool"},
-        "ground_id": {"offset": "0x0", "type": "i32"}
+        "x": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "y": {
+          "offset": "0x0",
+          "type": "i32"
+        },
+        "walkable": {
+          "offset": "0x0",
+          "type": "bool"
+        },
+        "ground_id": {
+          "offset": "0x0",
+          "type": "i32"
+        }
       }
     }
   },
   "settings": {
-    "tick_seconds": 0.1,
+    "tick_seconds": 0.05,
     "state_source": "lua",
     "background_input": false,
-    "input_backend": "hybrid",
-    "key_method": "focus",
-    "focus_game": false,
+    "input_backend": "lua",
     "window_name": "PokeXGames",
-    "mouse_offset_tiles": [0, 0],
-    "mouse_offset_px": [-29, -75],
-    "window_name": null,
     "pointer_size": 8,
-    "tile_size": 64,
-    "tile_size_x": 58,
-    "player_screen_x": 480,
-    "player_screen_y": 360,
     "move_key_duration": 0.02,
     "keymap": {
       "move": {
-        "0": "NUM8", "1": "NUM9", "2": "NUM6", "3": "NUM3",
-        "4": "NUM2", "5": "NUM1", "6": "NUM4", "7": "NUM7"
+        "0": "NUM8",
+        "1": "NUM9",
+        "2": "NUM6",
+        "3": "NUM3",
+        "4": "NUM2",
+        "5": "NUM1",
+        "6": "NUM4",
+        "7": "NUM7"
       },
       "say": "ENTER"
     },
     "humanizer": {
       "enabled": true,
-      "tick_jitter_pct": 30,
-      "cooldown_jitter_pct": 25,
-      "threshold_jitter_pct": 10,
-      "key_duration_jitter_pct": 40,
-      "micro_idle_chance": 0.04,
-      "pause_chance": 0.004,
-      "pause_seconds": [3, 12],
-      "session_enabled": false,
-      "play_minutes": [45, 120],
-      "break_minutes": [5, 25],
+      "profile": "normal",
+      "overrides": {
+        "cooldown_jitter_pct": 0
+      },
+      "idle_only_pause": true,
       "random_seed": null
     }
   },
   "lua": {
     "state_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_state.json",
     "cmd_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_cmd.txt",
-    "direction_map": {"0": 0, "1": 4, "2": 1, "3": 5, "4": 2, "5": 6, "6": 3, "7": 7}
+    "control_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_control.json",
+    "status_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_status.json",
+    "minimap_file": "/home/dkaisak/Descargas/pxg-linux/mydata/minimap.otmm",
+    "shiny_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_shiny.json",
+    "routes_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_routes.json",
+    "direction_map": {
+      "0": 0,
+      "1": 4,
+      "2": 1,
+      "3": 5,
+      "4": 2,
+      "5": 6,
+      "6": 3,
+      "7": 7
+    },
+    "pokemon_skills_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_pokemon_skills.json",
+    "ignore_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_ignore.json"
+  },
+  "ui": {
+    "port": 8765,
+    "host": "192.168.1.52",
+    "auto_open": true,
+    "log_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot.log"
   },
   "behaviors": {
     "crisis": {
@@ -169,42 +304,114 @@
       "cooldown": 1.0
     },
     "capture": {
-      "enabled": false,
+      "enabled": true,
       "targets": [],
       "catch_all": false,
+      "shiny_only": true,
       "hp_threshold": 30,
-      "range": 20,
+      "range": 1,
       "ball_key": "F4",
-      "interval": 0.8,
-      "max_throws": 6,
+      "interval": 1.0,
+      "max_throws": 10,
       "cooldown": 1.5
     },
     "combat": {
       "enabled": true,
-      "detect_range": 20,
-      "attack_range": 20,
-      "moves": ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+      "detect_range": 7,
+      "attack_range": 2,
+      "moves": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
       "ready_pct": 100,
-      "cooldown": 0.3,
+      "cooldown": 0.1,
+      "retarget_interval": 0.25,
+      "target_switch_secs": 4.0,
+      "target_drop_secs": 3.0,
+      "target_blacklist_secs": 10.0,
+      "no_damage_secs": 3.0,
+      "spawn_clear_dist": 12,
+      "spawn_wait_secs": 1.0,
+      "spawn_away_timeout": 30.0,
+      "spawn_return_timeout": 45.0,
+      "spawn_retries": 2,
+      "spawn_blacklist_secs": 20.0,
+      "spawn_cooldown_secs": 8.0,
+      "resend_secs": 0.5,
       "approach_cooldown": 0.15,
       "corpse_detect_hp": 40,
-      "loot_seconds": 15.0
+      "loot_seconds": 15.0,
+      "lure_aoe": true,
+      "lure_visible_min": 5,
+      "lure_attack_range": 2,
+      "lure_attack_min": 2,
+      "lure_wait_timeout": 20.0,
+      "aoe_priority": [
+        "Air Vortex"
+      ],
+      "pokestop_method": "func",
+      "pokestop_talk": "!pokestop",
+      "pokestop_key": "R",
+      "panic_hp": 20
     },
     "loot": {
       "enabled": true,
-      "loot_key": "e",
-      "use_key": true,
-      "loot_button": 1,
-      "range": 20,
-      "interval": 1.2,
-      "move_interval": 0.35,
-      "max_loots": 6
+      "interval": 0.5,
+      "collect_interval": 1.0,
+      "collect_grace": 0.7,
+      "stuck_secs": 2.5,
+      "resend_secs": 2.5,
+      "reach": 20,
+      "timeout": 20.0,
+      "enemy_range": 3,
+      "phase_secs": 5.0
     },
     "route": {
       "enabled": true,
       "arrive_distance": 1,
       "step_delay": 0.3,
-      "static_map": null
+      "resend_secs": 2.5,
+      "stuck_secs": 2.0,
+      "start_idle_seconds": [
+        25,
+        60
+      ],
+      "static_map": null,
+      "progress_stuck_secs": 6.0,
+      "max_nav_dist": 8,
+      "detour": false,
+      "start_idle_random": false,
+      "seg_recalc_dist": 2
+    },
+    "explore": {
+      "enabled": false,
+      "home": null,
+      "radius": 60,
+      "patrol": true,
+      "patrol_step": 4,
+      "coverage_radius": 2,
+      "lookahead": 40,
+      "stuck_secs": 2.5,
+      "blacklist_secs": 30,
+      "resend_secs": 0.6,
+      "save_interval": 5.0
+    },
+    "revive": {
+      "enabled": true,
+      "slot": 3,
+      "item": 2269,
+      "click_delay": 0.3,
+      "verify_delay": 1.2,
+      "max_attempts": 3,
+      "min_interval_secs": 8.0,
+      "on_stun": true
     }
   },
   "route": {

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PXG Bot — Panel</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" id="conn"></span>
+      <strong>PXG Bot</strong>
+      <span class="muted" id="who">—</span>
+    </div>
+    <div class="statusline">
+      <span class="chip" id="behavior">idle</span>
+      <span class="chip" id="humanizer">—</span>
+      <span class="chip" id="uptime">0s</span>
+      <span class="chip" id="pid">detenido</span>
+    </div>
+    <div class="actions">
+      <button id="btn-start" class="primary">Iniciar</button>
+      <button id="btn-stop" class="danger">Detener</button>
+      <button id="btn-pause">Pausar</button>
+      <button id="btn-panic" class="danger">Pánico</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card span2">
+      <h3>Estado</h3>
+      <div class="row"><label>HP</label><div class="bar"><i id="hp-bar"></i><span id="hp-txt">0%</span></div></div>
+      <div class="row"><label>MP</label><div class="bar mp"><i id="mp-bar"></i><span id="mp-txt">0%</span></div></div>
+      <div class="kv">
+        <span>Pos <b id="pos">—</b></span>
+        <span>Nivel <b id="level">—</b></span>
+        <span>Enemigos <b id="enemies">0</b></span>
+        <span>Caminando <b id="walking">no</b></span>
+      </div>
+      <div class="kv small">
+        <span>nav: <code id="nav">—</code></span>
+        <span>cmd: <code id="lastcmd">—</code></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Comportamientos</h3>
+      <div id="behaviors" class="toggles"></div>
+    </section>
+
+    <section class="card">
+      <h3>Exploración</h3>
+      <div class="row"><label>Home</label><code id="home">—</code>
+        <button id="btn-home" class="mini">Fijar aquí</button>
+        <button id="btn-home-clear" class="mini ghost">Limpiar</button>
+      </div>
+      <div class="row"><label>Radio</label>
+        <input type="range" id="radius" min="10" max="200" step="5" value="60" />
+        <span id="radius-txt" class="muted">60</span>
+      </div>
+      <div class="row"><label>Patrulla</label><input type="checkbox" id="patrol" /></div>
+      <div class="row"><label>Ball a todos</label><input type="checkbox" id="catchall" />
+        <span class="muted small">derrotados</span></div>
+      <div class="row"><label>Lure min</label><input type="number" id="aoemin" class="mini" min="1" max="20" value="5" style="width:64px" />
+        <span class="muted small">visibles para lurear</span></div>
+    </section>
+
+    <section class="card span2">
+      <h3>Mapa <span class="muted small" id="mapinfo"></span></h3>
+      <div class="mapctrls">
+        <button id="m-follow" class="mini">Seguir</button>
+        <button id="m-mode" class="mini">Ver: color</button>
+        <button id="m-zoomin" class="mini">+</button>
+        <button id="m-zoomout" class="mini">−</button>
+        <span class="sep"></span>
+        <button id="m-edit" class="mini">Dibujar ruta</button>
+        <button id="m-undo" class="mini ghost">Deshacer</button>
+        <button id="m-clear" class="mini ghost">Limpiar</button>
+        <button id="m-save" class="mini primary">Guardar ruta</button>
+        <label class="inline"><input type="checkbox" id="m-loop" checked> loop</label>
+        <label class="inline"><input type="checkbox" id="m-pp"> ping-pong</label>
+      </div>
+      <div class="mapctrls">
+        <select id="m-routes" class="mini"></select>
+        <button id="m-load" class="mini">Cargar</button>
+        <button id="m-delete" class="mini ghost">Eliminar</button>
+        <span class="sep"></span>
+        <input id="m-route-name" class="mini" placeholder="nombre de ruta" />
+        <button id="m-saveas" class="mini primary">Guardar como</button>
+      </div>
+      <canvas id="map" width="1000" height="560"></canvas>
+      <div class="muted small" id="maproute">ruta: 0 waypoints</div>
+    </section>
+
+    <section class="card span2">
+      <h3>Skills <button id="psk-refresh" class="mini ghost right">refrescar Pokémon</button></h3>
+      <div id="psk" class="psk"></div>
+      <div id="psk-info" class="muted small"></div>
+    </section>
+
+    <section class="card span2">
+      <h3>Ignorar criaturas <button id="ign-refresh" class="mini ghost right">refrescar</button></h3>
+      <div id="ign" class="psk"></div>
+      <div id="ign-info" class="muted small"></div>
+    </section>
+
+    <section class="card span2">
+      <h3>Skills <span class="muted small">(rápidas)</span></h3>
+      <div id="skills" class="skills"></div>
+    </section>
+
+    <section class="card span2">
+      <h3>Log <button id="btn-log-clear" class="mini ghost right">auto-scroll</button></h3>
+      <pre id="log" class="log"></pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -92,6 +92,10 @@ class Creature:
     is_player: bool = False
     is_npc: bool = False
     visible: bool = True
+    outfit: Optional[int] = None
+    shiny: bool = False
+    uid: str = ""
+    ignored: bool = False
 
     @property
     def attackable(self) -> bool:
@@ -99,6 +103,7 @@ class Creature:
             not self.is_self
             and not self.is_npc
             and not self.is_summon
+            and not self.ignored
             and self.hp_pct > 0
             and (self.kind in (CreatureKind.MONSTER, CreatureKind.POKEMON) or self.is_wild)
         )
@@ -140,10 +145,24 @@ class GameState:
     connected: bool = True
     in_battle: bool = False
     attacking_name: str = ""
+    is_walking: bool = False
+    spawn_blocked: bool = False
+    captured: bool = False
+    active_pokemon_name: str = ""
+    skill_order: list = field(default_factory=list)
     moves: list = field(default_factory=list)
     bag: list = field(default_factory=list)
+    server_msgs: list = field(default_factory=list)
+    defeated: list = field(default_factory=list)
     camera: Optional[tuple] = None
     map_rect: Optional[dict] = None
+    tile_size: Optional[dict] = None
+    visible: Optional[dict] = None
+    slot_pos: dict = field(default_factory=dict)
+    win_pos: tuple = (0, 0)
+    nav_result: str = ""
+    pokemon_pos: Optional[tuple] = None
+    pokemon_hp: Optional[int] = None
     timestamp: float = 0.0
 
     def creature(self, cid: int) -> Optional[Creature]:

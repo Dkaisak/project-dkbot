@@ -6,16 +6,9 @@ from typing import Optional
 
 DEFAULT_HUMANIZER = {
     "enabled": True,
-    "tick_jitter_pct": 30,
-    "cooldown_jitter_pct": 25,
-    "threshold_jitter_pct": 10,
-    "key_duration_jitter_pct": 40,
-    "micro_idle_chance": 0.04,
-    "pause_chance": 0.004,
-    "pause_seconds": [3, 12],
-    "session_enabled": False,
-    "play_minutes": [45, 120],
-    "break_minutes": [5, 25],
+    "profile": "normal",
+    "overrides": {},
+    "idle_only_pause": True,
     "random_seed": None,
 }
 
@@ -43,7 +36,21 @@ DEFAULT_SETTINGS = {
 DEFAULT_LUA = {
     "state_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_state.json",
     "cmd_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_cmd.txt",
+    "control_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_control.json",
+    "status_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_status.json",
+    "minimap_file": "/home/dkaisak/Descargas/pxg-linux/mydata/minimap.otmm",
+    "shiny_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_shiny.json",
+    "pokemon_skills_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_pokemon_skills.json",
+    "ignore_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_ignore.json",
+    "routes_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_routes.json",
     "direction_map": {"0": 0, "1": 4, "2": 1, "3": 5, "4": 2, "5": 6, "6": 3, "7": 7},
+}
+
+DEFAULT_UI = {
+    "port": 8765,
+    "host": "127.0.0.1",
+    "auto_open": True,
+    "log_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot.log",
 }
 
 DEFAULT_BEHAVIORS = {
@@ -70,18 +77,43 @@ DEFAULT_BEHAVIORS = {
         "enabled": True,
         "targets": [],
         "catch_all": False,
+        "shiny_only": True,
         "hp_threshold": 30,
-        "range": 6,
+        "range": 1,
         "ball_key": "F4",
+        "interval": 1.0,
+        "max_throws": 10,
         "cooldown": 1.5,
     },
     "combat": {
         "enabled": True,
         "detect_range": 7,
-        "attack_range": 1,
+        "attack_range": 2,
         "moves": ["F5", "F6", "F7", "F8"],
-        "cooldown": 0.7,
+        "cooldown": 0.1,
         "approach_cooldown": 0.15,
+        "target_switch_secs": 4.0,
+        "target_drop_secs": 3.0,
+        "target_blacklist_secs": 10.0,
+        "lure_aoe": True,
+        "lure_visible_min": 5,
+        "lure_attack_range": 2,
+        "lure_attack_min": 2,
+        "lure_wait_timeout": 20.0,
+        "panic_hp": 20,
+        "pokestop_method": "func",
+        "pokestop_talk": "!pokestop",
+        "pokestop_key": "R",
+        "aoe_priority": ["Air Vortex"],
+        "no_damage_secs": 3.0,
+        "spawn_clear_dist": 12,
+        "spawn_wait_secs": 1.0,
+        "spawn_away_timeout": 30.0,
+        "spawn_return_timeout": 45.0,
+        "spawn_retries": 2,
+        "spawn_blacklist_secs": 20.0,
+        "spawn_cooldown_secs": 8.0,
+        "resend_secs": 0.5,
     },
     "loot": {
         "enabled": True,
@@ -90,11 +122,41 @@ DEFAULT_BEHAVIORS = {
         "cooldown": 1.0,
         "periodic_quickloot": False,
     },
+    "revive": {
+        "enabled": True,
+        "slot": 3,
+        "item": 2269,
+        "min_interval_secs": 8.0,
+        "on_stun": True,
+        "click_delay": 0.3,
+        "verify_delay": 1.2,
+        "max_attempts": 3,
+    },
     "route": {
         "enabled": True,
+        "detour": False,
+        "start_idle_random": False,
         "arrive_distance": 1,
         "step_delay": 0.25,
+        "resend_secs": 0.5,
+        "stuck_secs": 2.0,
+        "progress_stuck_secs": 6.0,
+        "max_nav_dist": 8,
+        "start_idle_seconds": [25, 60],
         "static_map": None,
+    },
+    "explore": {
+        "enabled": False,
+        "home": None,
+        "radius": 60,
+        "patrol": True,
+        "patrol_step": 4,
+        "coverage_radius": 2,
+        "lookahead": 40,
+        "stuck_secs": 2.5,
+        "blacklist_secs": 30,
+        "resend_secs": 0.6,
+        "save_interval": 5.0,
     },
 }
 
@@ -115,6 +177,7 @@ def load_config(path: str) -> dict:
     raw["settings"] = deep_merge(DEFAULT_SETTINGS, raw.get("settings", {}))
     raw["behaviors"] = deep_merge(DEFAULT_BEHAVIORS, raw.get("behaviors", {}))
     raw["lua"] = deep_merge(DEFAULT_LUA, raw.get("lua", {}))
+    raw["ui"] = deep_merge(DEFAULT_UI, raw.get("ui", {}))
     raw.setdefault("offsets", {})
     return raw
 

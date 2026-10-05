@@ -35,26 +35,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         source = MockStateSource(cfg, args.verbose)
         inp = MockInput(args.verbose)
     elif cfg.get("settings", {}).get("state_source") == "lua":
-        from pxg_bot.lua_bridge import HybridInput, LuaBridge, LuaInput, LuaStateSource
+        from pxg_bot.lua_bridge import LuaBridge, LuaInput, LuaStateSource
 
         bridge = LuaBridge(cfg.get("lua", {}))
         if not bridge.fresh(5.0):
             print("aviso: el estado Lua no se actualiza; instala el agente (tools/install_agent.py)", file=sys.stderr)
         source = LuaStateSource(bridge)
-        backend = cfg.get("settings", {}).get("input_backend", "lua")
-        if backend == "hybrid":
-            from pxg_bot.input import LinuxInput
-            from pxg_bot.memory import find_pid
-
-            pid = find_pid(cfg.get("process_name", "pxgme-linux"))
-            key_settings = dict(cfg.get("settings", {}))
-            key_settings["input_backend"] = "xdotool"
-            key_input = LinuxInput(pid, key_settings)
-            inp = HybridInput(LuaInput(bridge), key_input)
-        elif backend == "lua":
-            inp = LuaInput(bridge)
-        else:
-            inp = create_input(0, cfg.get("settings", {}))
+        inp = LuaInput(bridge)
     else:
         from pxg_bot.reader import MemoryStateSource
 
@@ -116,6 +103,14 @@ def cmd_procs(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    from pxg_bot.webui import serve
+
+    cfg = load_config(args.config)
+    auto_open = not args.no_open and bool(cfg.get("ui", {}).get("auto_open", True))
+    return serve(args.config, host=args.host, port=args.port, open_browser=auto_open)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pxg-bot", description="Bot AFK para clientes tipo Tibia (PokeXGames)")
     parser.add_argument("--config", default="config.json")
@@ -156,6 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
     procs = sub.add_parser("procs", help="lista procesos")
     procs.add_argument("name", nargs="?", default=None)
     procs.set_defaults(func=cmd_procs)
+
+    gui = sub.add_parser("gui", help="interfaz grafica web del bot")
+    gui.add_argument("--port", type=int, default=None)
+    gui.add_argument("--host", default=None)
+    gui.add_argument("--no-open", action="store_true", help="no abrir el navegador automaticamente")
+    gui.set_defaults(func=cmd_gui)
 
     return parser
 

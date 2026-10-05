@@ -6,7 +6,7 @@ import time
 from typing import Optional
 
 from .input import BaseInput
-from .models import Creature, CreatureKind, GameState, Player, Vec3
+from .models import Creature, CreatureKind, GameState, Player, Pokemon, Vec3
 
 # Otc::Direction (cliente) por indice de direccion del bot (0=N,1=NE,...,7=NW).
 DEFAULT_DIRECTION_MAP = {0: 0, 1: 4, 2: 1, 3: 5, 4: 2, 5: 6, 6: 3, 7: 7}
@@ -23,6 +23,9 @@ class LuaBridge:
     def __init__(self, cfg: dict):
         self.state_file = cfg.get("state_file", "")
         self.cmd_file = cfg.get("cmd_file", "")
+        self.shiny_file = cfg.get("shiny_file", "")
+        self.pokemon_skills_file = cfg.get("pokemon_skills_file", "")
+        self.ignore_file = cfg.get("ignore_file", "")
         self.direction_map = {int(k): int(v) for k, v in cfg.get("direction_map", DEFAULT_DIRECTION_MAP).items()}
         self._last_mtime = 0.0
 
@@ -37,7 +40,7 @@ class LuaBridge:
         if not self.cmd_file:
             return
         try:
-            with open(self.cmd_file, "w", encoding="utf-8") as handle:
+            with open(self.cmd_file, "a", encoding="utf-8") as handle:
                 handle.write(line.rstrip("\n") + "\n")
         except OSError:
             pass
@@ -52,9 +55,24 @@ class LuaBridge:
 class LuaStateSource:
     def __init__(self, bridge: LuaBridge):
         self.bridge = bridge
+        from .shiny import ShinyTable
+
+        self.shiny = ShinyTable(bridge.shiny_file) if bridge.shiny_file else None
+        self._last_shiny_save = 0.0
+        from .pokemon_skills import PokemonSkills
+
+        self.pokemon_skills = (PokemonSkills(bridge.pokemon_skills_file)
+                               if bridge.pokemon_skills_file else None)
+        self._last_skills_save = 0.0
+        from .ignore import IgnoreTable
+
+        self.ignore = IgnoreTable(bridge.ignore_file) if bridge.ignore_file else None
+        self._last_ignore_save = 0.0
 
     def read_state(self) -> GameState:
         data = self.bridge.read()
+        if self.ignore is not None:
+            self.ignore.maybe_reload()
         if not data or not data.get("connected", False):
             return GameState(player=Player(), connected=False, timestamp=time.time())
 
@@ -85,10 +103,13 @@ class LuaStateSource:
             if key in seen:
                 return
             seen.add(key)
+            uid = str(c.get("id", "") or "")
+            name = c.get("name", "")
+            ignored = bool(self.ignore is not None and self.ignore.is_ignored(name, uid))
             creatures.append(
                 Creature(
                     cid=cid,
-                    name=c.get("name", ""),
+                    name=name,
                     pos=pos,
                     hp_pct=int(c.get("hp", 0)),
                     kind=kind,
@@ -96,6 +117,9 @@ class LuaStateSource:
                     is_npc=bool(c.get("npc")),
                     is_wild=kind == CreatureKind.MONSTER,
                     is_self=(c.get("name") == pname and (pos.x, pos.y, pos.z) == ppos),
+                    outfit=c.get("outfit"),
+                    uid=uid,
+                    ignored=ignored,
                 )
             )
 
@@ -134,14 +158,51 @@ class LuaStateSource:
             for cr in match:
                 cr.is_summon = True
                 cr.is_wild = False
+        if self.shiny is not None:
+            self.shiny.observe(creatures)
+            for cr in creatures:
+                cr.shiny = self.shiny.is_shiny(cr)
+            if time.time() - self._last_shiny_save > 10:
+                self.shiny.save()
+                self._last_shiny_save = time.time()
+        if self.ignore is not None and time.time() - self._last_ignore_save > 10:
+            self.ignore.save()
+            self._last_ignore_save = time.time()
         state = GameState(player=player, creatures=creatures, timestamp=time.time())
         state.in_battle = bool(data.get("attacking")) or any(c.kind == CreatureKind.MONSTER for c in creatures)
         state.attacking_name = data.get("attacking_name", "")
+        state.is_walking = bool(data.get("is_walking", False))
+        state.spawn_blocked = bool(data.get("spawn_blocked", False))
+        state.captured = bool(data.get("captured", False))
+        state.active_pokemon_name = str(data.get("active_pokemon", "") or "")
         state.moves = data.get("moves", [])
+        state.party = [
+            Pokemon(slot=int(p.get("slot", 0)), name=str(p.get("id", "") or ""),
+                    hp_pct=int(p.get("hp", 0)), alive=int(p.get("hp", 0)) > 0)
+            for p in (data.get("party", []) or [])
+        ]
+        if self.pokemon_skills is not None:
+            self.pokemon_skills.observe(state.active_pokemon_name, state.moves)
+            state.skill_order = self.pokemon_skills.order_for(state.active_pokemon_name)
+            if time.time() - self._last_skills_save > 10:
+                self.pokemon_skills.save()
+                self._last_skills_save = time.time()
         state.bag = data.get("bag", [])
+        state.server_msgs = data.get("server_msgs", [])
+        state.defeated = data.get("defeated", [])
         cam = data.get("camera")
         state.camera = (int(cam["x"]), int(cam["y"])) if cam else None
         state.map_rect = data.get("map_rect")
+        state.tile_size = data.get("tile_size")
+        state.visible = data.get("visible")
+        state.slot_pos = data.get("slot_pos", {}) or {}
+        wp = data.get("win_pos") or {}
+        state.win_pos = (int(wp.get("x", 0)), int(wp.get("y", 0)))
+        state.nav_result = str(data.get("nav_result", "") or "")
+        pp = data.get("pokemon_pos")
+        state.pokemon_pos = (int(pp["x"]), int(pp["y"]), int(pp["z"])) if pp else None
+        ph = data.get("pokemon_hp")
+        state.pokemon_hp = int(ph) if isinstance(ph, (int, float)) else None
         state.connected = True
         return state
 
@@ -158,14 +219,50 @@ class LuaInput(BaseInput):
     def walk_to(self, target: Vec3) -> None:
         self.bridge.send(f"nav {target.x} {target.y} {target.z}")
 
+    def walk_path(self, waypoints: list, z: int) -> None:
+        parts = [str(int(z))]
+        for w in waypoints:
+            parts.append(str(int(w.x)))
+            parts.append(str(int(w.y)))
+        if len(parts) > 1:
+            self.bridge.send("navpath " + " ".join(parts))
+
+    def turn(self, direction: int) -> None:
+        self.bridge.send(f"turn {int(direction)}")
+
+    def hotkey(self, key: str) -> None:
+        self.bridge.send(f"hotkey {key}")
+
+    def stand_near(self, target: Vec3) -> None:
+        self.bridge.send(f"standnear {target.x} {target.y} {target.z}")
+
+    def stand_near_many(self, bodies: list, z: int) -> None:
+        parts = [str(z)]
+        for b in bodies:
+            parts.append(str(b[0]))
+            parts.append(str(b[1]))
+        self.bridge.send("standnearmany " + " ".join(parts))
+
     def loot(self) -> None:
         self.bridge.send("loot")
 
+    def spell(self, slot: str) -> None:
+        self.bridge.send(f"spell {slot}")
+
     def press(self, key: str) -> None:
-        self.bridge.send(f"key {key}")
+        self.spell(key)
 
     def click_tile(self, target: Vec3, context: dict) -> None:
+        # combate: fijar objetivo (Lua), no mueve al personaje
         self.bridge.send(f"attackat {target.x} {target.y} {target.z}")
+
+    def mouse_to_tile(self, target: Vec3, context: dict) -> None:
+        # el clic por Lua no necesita mover cursor fisico; no-op
+        pass
+
+    def click_at(self, target: Vec3, context: dict) -> None:
+        # clic derecho exclusivo para loot/captura (Lua)
+        self.bridge.send(f"rclick {target.x} {target.y} {target.z}")
 
     def say(self, text: str) -> None:
         self.bridge.send(f"say {text}")
@@ -173,60 +270,34 @@ class LuaInput(BaseInput):
     def stop(self) -> None:
         self.bridge.send("stop")
 
+    def middle_click(self, target: Vec3) -> None:
+        self.bridge.send(f"mclick {target.x} {target.y} {target.z}")
 
-class HybridInput(BaseInput):
-    """Movimiento/target por Lua; hotkeys de skills por X11 (eventos reales)."""
+    def click_slot(self, slot: int) -> None:
+        self.bridge.send(f"clickslot {int(slot)}")
 
-    def __init__(self, lua_input: "LuaInput", key_input):
-        self.lua = lua_input
-        self.key = key_input
+    def call_slot(self, slot: int) -> None:
+        self.bridge.send(f"callslot {int(slot)}")
 
-    def move(self, direction: int) -> None:
-        self.lua.move(direction)
+    def pokestop(self, method: str = "func", arg: str = "") -> None:
+        line = "pokestop " + str(method)
+        if arg:
+            line += " " + str(arg)
+        self.bridge.send(line)
 
-    def click_tile(self, target: Vec3, context: dict) -> None:
-        self.lua.click_tile(target, context)
+    def revive(self, slot: int, item_id: int = 2269) -> None:
+        # El item se aplica sobre el Thing bajo el cursor: movemos el puntero
+        # fisico al slot (XTest) y el agente aplica el revive.
+        data = self.bridge.read()
+        sp = (data.get("slot_pos") or {}).get(str(int(slot)))
+        if not sp:
+            return
+        wx, wy = 0, 0
+        wp = data.get("win_pos") or {}
+        wx, wy = int(wp.get("x", 0)), int(wp.get("y", 0))
+        from . import x11mouse
+        if not x11mouse.move(int(sp.get("x", 0)) + wx, int(sp.get("y", 0)) + wy):
+            return
+        time.sleep(0.15)
+        self.bridge.send(f"revive {int(item_id)}")
 
-    def say(self, text: str) -> None:
-        self.lua.say(text)
-
-    def loot(self) -> None:
-        self.lua.loot()
-
-    def stop(self) -> None:
-        self.lua.stop()
-
-    def press(self, key: str) -> None:
-        self.key.press(str(key))
-
-    def _tile_screen(self, target: Vec3, context: dict):
-        camera = context.get("camera")
-        rect = context.get("map_rect")
-        if not camera or not rect:
-            return None
-        try:
-            wx, wy = self.key.window_origin()
-        except Exception:
-            wx, wy = 0, 0
-        tile = getattr(self.key, "tile_size", 32)
-        tile_x = int(getattr(self.key, "settings", {}).get("tile_size_x", tile))
-        off = getattr(self.key, "settings", {}).get("mouse_offset_tiles", [0, 0])
-        px = getattr(self.key, "settings", {}).get("mouse_offset_px", [0, 0])
-        sx = (wx + int(rect.get("x", 0)) + int(rect.get("w", 0)) // 2
-              + (target.x - camera[0]) * tile_x + tile_x // 2 + int(float(off[0]) * tile_x)
-              + int(px[0]))
-        sy = (wy + int(rect.get("y", 0)) + int(rect.get("h", 0)) // 2
-              + (target.y - camera[1]) * tile + tile // 2 + int(float(off[1]) * tile)
-              + int(px[1]))
-        return sx, sy
-
-    def mouse_to_tile(self, target: Vec3, context: dict) -> None:
-        coords = self._tile_screen(target, context)
-        if coords:
-            self.key.mouse_move(*coords)
-
-    def click_at(self, target: Vec3, context: dict) -> None:
-        coords = self._tile_screen(target, context)
-        if coords:
-            button = int(getattr(self.key, "settings", {}).get("loot_button", 1))
-            self.key.mouse_click(coords[0], coords[1], button)

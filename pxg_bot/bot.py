@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import atexit
+import json
+import os
 import time
 from typing import Optional
 
+from . import control as control_io
 from .behaviors import Blackboard, build_behaviors
 from .humanizer import Humanizer
 from .models import CreatureKind, GameState
@@ -20,14 +24,54 @@ class Bot:
         self.humanizer = Humanizer(cfg.get("settings", {}).get("humanizer", {}))
         route = self._build_route(cfg)
         self.route = route
-        self.bb = Blackboard(route=route, humanizer=self.humanizer)
-        self.behaviors = build_behaviors(cfg, route)
+        self.bb = Blackboard(route=route, humanizer=self.humanizer,
+                             ignore=getattr(self.source, "ignore", None))
+        self.control_file = control_io.control_path(cfg)
+        self.status_file = control_io.status_path(cfg)
+        self._pid_file = self._derive_pid_file()
+        self.world = self._build_world(cfg)
+        self.behaviors = build_behaviors(cfg, route, self.world)
+        self._orig_enabled = {b.name: b.cfg.get("enabled", True) for b in self.behaviors}
+        self.control_paused = False
+        self._control_mtime = 0.0
+        self._control_checked = 0.0
+        self._route_fp = None
+        self.last_chosen = None
+        self.started_at = time.time()
         self.break_until = 0.0
         self.session_play_until: Optional[float] = None
         if self.humanizer.enabled and self.humanizer.cfg.get("session_enabled"):
             self.session_play_until = time.time() + self.humanizer.uniform_range(
-                self.humanizer.cfg.get("play_minutes", [45, 120])
+                self.humanizer.cfg.get("play_minutes", [30, 90])
             ) * 60
+
+    def _derive_pid_file(self) -> str:
+        base = self.status_file or self.control_file or ""
+        if not base:
+            return ""
+        return os.path.join(os.path.dirname(base), "pxg_bot.pid")
+
+    def _build_world(self, cfg: dict):
+        base = self.status_file or self.control_file or ""
+        if not base:
+            return None
+        from .otmm import Minimap
+        from .world import WorldMap
+
+        path = os.path.join(os.path.dirname(base), "pxg_world.json")
+        ecfg = cfg.get("behaviors", {}).get("explore", {})
+        otmm = None
+        mm_file = cfg.get("lua", {}).get("minimap_file", "")
+        if mm_file:
+            otmm = Minimap(mm_file)
+            if not otmm.ensure():
+                otmm = None
+        world = WorldMap(path, radius=int(ecfg.get("radius", 60)),
+                         patrol_step=int(ecfg.get("patrol_step", 4)),
+                         coverage_radius=int(ecfg.get("coverage_radius", 2)),
+                         otmm=otmm)
+        world.load()
+        return world
 
     @staticmethod
     def _build_route(cfg: dict) -> Optional[Route]:
@@ -43,9 +87,11 @@ class Bot:
     def tick(self):
         state = self.source.read_state()
         self._manage_pause(state)
+        if not (self.bb.paused or self.control_paused):
+            self.bb.update_corpses(state)
         chosen = None
         for behavior in self.behaviors:
-            if behavior.name != "crisis" and self.bb.paused:
+            if behavior.name != "crisis" and (self.bb.paused or self.control_paused):
                 break
             try:
                 if not behavior.evaluate(state, self.bb):
@@ -63,7 +109,84 @@ class Bot:
                 if self.verbose:
                     print(f"[!] {behavior.name}: {exc}")
         self.ticks += 1
+        self.last_chosen = chosen
         return state, chosen
+
+    def refresh_control(self, force: bool = False) -> None:
+        """Lee el canal de control (si cambio) y aplica pausa/toggles/explore."""
+        if not self.control_file:
+            return
+        now = time.time()
+        if not force and now - self._control_checked < 0.2:
+            return
+        self._control_checked = now
+        try:
+            mtime = os.path.getmtime(self.control_file)
+        except OSError:
+            return
+        if not force and mtime == self._control_mtime:
+            return
+        self._control_mtime = mtime
+        data = control_io.read_control(self.control_file)
+        self.control_paused = bool(data.get("paused", False))
+        for behavior in self.behaviors:
+            override = (data.get("behaviors", {}) or {}).get(behavior.name, {})
+            behavior.cfg["enabled"] = bool(override.get("enabled", self._orig_enabled.get(behavior.name, True)))
+        explore = data.get("explore")
+        if isinstance(explore, dict) and explore:
+            self.cfg.setdefault("behaviors", {}).setdefault("explore", {}).update(explore)
+        capture = data.get("capture")
+        if isinstance(capture, dict) and capture:
+            for behavior in self.behaviors:
+                if behavior.name == "capture":
+                    behavior.cfg.update(capture)
+        combat = data.get("combat")
+        if isinstance(combat, dict) and combat:
+            for behavior in self.behaviors:
+                if behavior.name == "combat":
+                    behavior.cfg.update(combat)
+        route = data.get("route")
+        if isinstance(route, dict) and route.get("waypoints") is not None:
+            self._apply_route(route)
+
+    def _apply_route(self, route: dict) -> None:
+        wps = route.get("waypoints") or []
+        fp = (tuple(tuple(int(v) for v in w) for w in wps),
+              bool(route.get("loop", True)), bool(route.get("ping_pong", False)),
+              bool(route.get("enabled", True)))
+        if fp == self._route_fp:
+            return
+        self._route_fp = fp
+        self.route = Route.from_config(wps, loop=fp[1], ping_pong=fp[2]) if wps else None
+        self.bb.route = self.route
+        for behavior in self.behaviors:
+            if behavior.name == "route":
+                behavior.route = self.route
+                behavior.cfg["enabled"] = bool(route.get("enabled", True))
+
+    def write_status(self, chosen: Optional[str], state: Optional[GameState]) -> None:
+        if not self.status_file:
+            return
+        payload = {
+            "loop": self.loops,
+            "ticks": self.ticks,
+            "chosen": chosen or "idle",
+            "paused": bool(self.bb.paused or self.control_paused),
+            "control_paused": bool(self.control_paused),
+            "human_seen": bool(self.bb.human_seen),
+            "reason": self.bb.stop_reason,
+            "uptime": round(time.time() - self.started_at, 1),
+            "connected": bool(getattr(state, "connected", False)) if state else False,
+            "humanizer": self.humanizer.profile,
+            "updated": time.time(),
+        }
+        try:
+            tmp = self.status_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, self.status_file)
+        except OSError:
+            pass
 
     def _manage_pause(self, state: GameState) -> None:
         crisis_cfg = self.cfg.get("behaviors", {}).get("crisis", {})
@@ -82,22 +205,25 @@ class Bot:
             self.bb.paused = False
             self.bb.stop_reason = ""
 
-    def _should_break(self) -> bool:
+    def _should_break(self, busy: bool = False) -> bool:
         humanizer = self.humanizer
         if not humanizer.enabled:
+            return False
+        # las pausas/descansos no deben cortar una accion en curso
+        if humanizer.cfg.get("idle_only_pause", True) and busy:
             return False
         now = time.time()
         if now < self.break_until:
             return True
         if self.session_play_until is not None and now >= self.session_play_until:
-            duration = humanizer.uniform_range(humanizer.cfg.get("break_minutes", [5, 25])) * 60
+            duration = humanizer.uniform_range(humanizer.cfg.get("break_minutes", [1, 5])) * 60
             self.break_until = now + duration
             self.session_play_until = now + duration + humanizer.uniform_range(
-                humanizer.cfg.get("play_minutes", [45, 120])
+                humanizer.cfg.get("play_minutes", [30, 90])
             ) * 60
             return True
         if humanizer.chance(humanizer.cfg.get("pause_chance", 0)):
-            self.break_until = now + humanizer.uniform_range(humanizer.cfg.get("pause_seconds", [3, 12]))
+            self.break_until = now + humanizer.uniform_range(humanizer.cfg.get("pause_seconds", [1, 4]))
             return True
         return False
 
@@ -108,24 +234,104 @@ class Bot:
 
     def run(self, max_ticks: Optional[int] = None) -> None:
         tick_seconds = float(self.cfg.get("settings", {}).get("tick_seconds", 0.1))
-        while max_ticks is None or self.loops < max_ticks:
-            self.loops += 1
-            if self._should_break():
+        self._write_pid()
+        try:
+            while max_ticks is None or self.loops < max_ticks:
+                self.loops += 1
+                self.refresh_control()
+                busy = self.last_chosen not in (None, "idle", "break")
+                if self._should_break(busy):
+                    self.write_status("break", None)
+                    if self.verbose:
+                        remaining = max(0, int(self.break_until - time.time()))
+                        print(f"[break] pausa humana, {remaining}s restantes")
+                    time.sleep(self._sleep_seconds(tick_seconds))
+                    continue
+                state, chosen = self.tick()
+                self.write_status(chosen, state)
+                # mirar alrededor en idle (en vez de quedarse totalmente quieto)
+                if (
+                    not busy
+                    and chosen in (None, "idle")
+                    and self.humanizer.enabled
+                    and self.bb.ready("look", 1.0)
+                    and self.humanizer.should_look_around()
+                ):
+                    self.inp.turn(self.humanizer.choice([0, 1, 2, 3]))
+                    self.bb.mark("look")
                 if self.verbose:
-                    remaining = max(0, int(self.break_until - time.time()))
-                    print(f"[break] pausa humana, {remaining}s restantes")
+                    print(self._format(state, chosen))
                 time.sleep(self._sleep_seconds(tick_seconds))
-                continue
-            state, chosen = self.tick()
-            if self.verbose:
-                print(self._format(state, chosen))
-            time.sleep(self._sleep_seconds(tick_seconds))
+        finally:
+            if self.world is not None:
+                self.world.save()
+            self._remove_pid()
+
+    def _write_pid(self) -> None:
+        if not self._pid_file:
+            return
+        try:
+            with open(self._pid_file, "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+            atexit.register(self._remove_pid)
+        except OSError:
+            pass
+
+    def _remove_pid(self) -> None:
+        if not self._pid_file:
+            return
+        try:
+            with open(self._pid_file, "r", encoding="utf-8") as handle:
+                if handle.read().strip() != str(os.getpid()):
+                    return
+            os.remove(self._pid_file)
+        except OSError:
+            pass
 
     def _format(self, state: GameState, chosen: Optional[str]) -> str:
         p = state.player
-        flag = f"PAUSA({self.bb.stop_reason})" if self.bb.paused else (chosen or "idle")
+        pend = self.bb.notes.get("corpses_pending", [])
+        pd = min((max(abs(p.pos.x - c["x"]), abs(p.pos.y - c["y"])) for c in pend), default=-1)
+        eds = [p.pos.distance(c.pos) for c in state.creatures if c.attackable]
+        ed = min(eds) if eds else -1
+        vis = state.visible or {}
+        hw = int(vis.get("w", 21)) // 2
+        hh = int(vis.get("h", 11)) // 2
+        ve = [c for c in state.creatures if c.attackable
+              and abs(c.pos.x - p.pos.x) <= hw and abs(c.pos.y - p.pos.y) <= hh]
+        pp = getattr(state, "pokemon_pos", None)
+        rx, ry = (pp[0], pp[1]) if pp else (p.pos.x, p.pos.y)
+        pkm = f"{rx},{ry}"
+        edx = max((max(abs(c.pos.x - rx), abs(c.pos.y - ry)) for c in ve), default=-1)
+        rp = next((q.hp_pct for q in state.party if q.slot == 3), None)
+        _aoe = [m for m in (state.moves or []) if m.get("aoe")]
+        rcd = any(isinstance(m.get("pct"), (int, float)) and m["pct"] < 100 for m in _aoe)
+        rve = sum(1 for c in state.creatures if c.attackable
+                  and abs(c.pos.x - p.pos.x) <= hw and abs(c.pos.y - p.pos.y) <= hh)
+        rpnd = bool(self.bb.notes.get("revive_pending"))
+        pkhp = getattr(state, "pokemon_hp", None)
+        stun = any("stun" in str(m.get("effect", "")).lower()
+                   and isinstance(m.get("pct"), (int, float)) and m["pct"] < 100
+                   for m in (state.moves or []))
+        if self.control_paused:
+            flag = "PAUSA(ui)"
+        elif self.bb.paused:
+            flag = f"PAUSA({self.bb.stop_reason})"
+        else:
+            flag = chosen or "idle"
         return (
             f"t={self.ticks:04d} pos=({p.pos.x},{p.pos.y},{p.pos.z}) "
             f"hp={p.hp_pct}% mp={p.mp_pct}% enemigos={sum(1 for c in state.creatures if c.attackable)} "
+            f"loot={len(self.bb.notes.get('corpses_pending', []))} lootd={pd} def={len(state.defeated)} "
+            f"loott={self.bb.notes.get('loot_phase_elapsed', 0.0):.1f} "
+            f"cov={self.bb.notes.get('loot_cur', -1)}/{self.bb.notes.get('loot_best', -1)} "
+            f"bopt={self.bb.notes.get('loot_bopt')} "
+            f"wp={getattr(self.route, 'index', -1) if self.route else -1} "
+            f"lure={self.bb.notes.get('lure_state', '-')} "
+            f"pks={self.bb.notes.get('pokestop_n', 0)} "
+            f"skord={','.join(str(k) for k in (getattr(state, 'skill_order', []) or [])[:5])} "
+            f"skill={self.bb.notes.get('skill_sent', '-')} ed={ed} edx={edx} pkm={pkm} pkhp={pkhp} "
+            f"rv={rp}/{int(rcd)}/{rve} rpnd={int(rpnd)} stun={int(stun)} "
+            f"nav={getattr(state, 'nav_result', '')} "
             f"-> {flag}"
         )

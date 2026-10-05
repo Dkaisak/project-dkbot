@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# shutdown - apaga o reinicia equipos, de forma local o remota por SSH.
+
+set -u
+
+DELAY=60
+MESSAGE="Apagado programado por el administrador"
+MODE="poweroff"
+SSH_USER="${USER:-root}"
+SSH_KEY=""
+HOSTFILE=""
+HOSTS=()
+
+usage() {
+  cat <<EOF
+uso: $0 [-t segundos] [-m mensaje] [-r] [-u usuario] [-i clave] [-f archivo] [host...]
+
+  -t <segundos>   retardo antes de apagar (default: 60)
+  -m <mensaje>    mensaje mostrado a los usuarios conectados
+  -r              reiniciar en vez de apagar
+  -u <usuario>    usuario SSH para los hosts remotos (default: \$USER)
+  -i <clave>      archivo de clave privada SSH
+  -f <archivo>    leer lista de hosts (uno por linea)
+
+Sin hosts, actua sobre la maquina local.
+EOF
+}
+
+while getopts ":t:m:ru:i:f:h" opt; do
+  case "$opt" in
+    t) DELAY="$OPTARG" ;;
+    m) MESSAGE="$OPTARG" ;;
+    r) MODE="reboot" ;;
+    u) SSH_USER="$OPTARG" ;;
+    i) SSH_KEY="$OPTARG" ;;
+    f) HOSTFILE="$OPTARG" ;;
+    h) usage; exit 0 ;;
+    \?) echo "opcion invalida: -$OPTARG" >&2; usage; exit 1 ;;
+    :)  echo "falta argumento para -$OPTARG" >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+HOSTS=("$@")
+
+if [[ -n "$HOSTFILE" ]]; then
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    HOSTS+=("$line")
+  done < "$HOSTFILE"
+fi
+
+if [[ "$MODE" == "reboot" ]]; then
+  FLAG="-r"
+  ACTION="reinicio"
+else
+  FLAG="-h"
+  ACTION="apagado"
+fi
+
+poweroff_local() {
+  if command -v shutdown >/dev/null 2>&1; then
+    shutdown "$FLAG" "+$(( DELAY / 60 ))" "$MESSAGE"
+  elif [[ "$MODE" == "reboot" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl reboot
+  elif command -v systemctl >/dev/null 2>&1; then
+    systemctl poweroff
+  elif command -v poweroff >/dev/null 2>&1; then
+    poweroff
+  else
+    return 1
+  fi
+}
+
+remote_cmd="shutdown $FLAG +$(( DELAY / 60 )) '$MESSAGE' || poweroff"
+
+if [[ ${#HOSTS[@]} -eq 0 ]]; then
+  echo "[*] $ACTION local en $DELAY s: $MESSAGE"
+  poweroff_local || { echo "[-] no se pudo iniciar el $ACTION local" >&2; exit 1; }
+else
+  ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5)
+  [[ -n "$SSH_KEY" ]] && ssh_opts+=(-i "$SSH_KEY")
+  rc=0
+  for host in "${HOSTS[@]}"; do
+    echo "[*] $ACTION de $host (via ${SSH_USER}@${host})"
+    if ssh "${ssh_opts[@]}" "${SSH_USER}@${host}" "$remote_cmd" </dev/null; then
+      echo "[+] $host correcto"
+    else
+      echo "[-] $host fallo" >&2
+      rc=1
+    fi
+  done
+  exit $rc
+fi

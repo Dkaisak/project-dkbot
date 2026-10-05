@@ -3,19 +3,79 @@ local DIR = "/home/dkaisak/Descargas/pxg-linux/mydata"
 local STATE = DIR .. "/pxg_bot_state.json"
 local CMD = DIR .. "/pxg_bot_cmd.txt"
 
-if PXG_EVENT and g_eventDispatcher and g_eventDispatcher.cancel then
-  pcall(function() g_eventDispatcher.cancel(PXG_EVENT) end)
+if g_eventDispatcher and g_eventDispatcher.cancel then
+  for _, ev in ipairs({ PXG_EVENT, PXG_EVENT_EXEC, PXG_EVENT_SNAP }) do
+    if ev then pcall(function() g_eventDispatcher.cancel(ev) end) end
+  end
 end
+PXG_NAV = nil
+pcall(function() g_game.stop() end)
 PXG_GEN = (PXG_GEN or 0) + 1
 local mygen = PXG_GEN
 
+local MAPFILE = DIR .. "/pxg_walkmap.txt"
+PXG_MAP = PXG_MAP or {}
+local map_loaded = false
+local map_dirty = false
+
+local function loadMap()
+  if map_loaded then return end
+  map_loaded = true
+  local f = io.open(MAPFILE, "r")
+  if f then
+    for line in f:lines() do
+      local x, y, z, w = line:match("(-?%d+),(-?%d+),(-?%d+),(%d)")
+      if x then PXG_MAP[x .. "," .. y .. "," .. z] = (w == "1") end
+    end
+    f:close()
+  end
+end
+
+local function saveMap()
+  if not map_dirty then return end
+  local f = io.open(MAPFILE, "w")
+  if f then
+    for k, w in pairs(PXG_MAP) do f:write(k .. "," .. (w and "1" or "0") .. "\n") end
+    f:close()
+  end
+  map_dirty = false
+end
+
+local function tileWalkable(x, y, z)
+  loadMap()
+  local key = x .. "," .. y .. "," .. z
+  local v = PXG_MAP[key]
+  if v ~= nil then return v end
+  local oka, aware = pcall(g_map.isAwareOfPosition, { x = x, y = y, z = z })
+  if not oka or not aware then
+    return nil  -- fuera del area cargada: desconocido
+  end
+  local ok, t = pcall(g_map.getTile, { x = x, y = y, z = z })
+  if not ok or not t then
+    return nil
+  end
+  local o, r = pcall(function() return t:isWalkable() end)
+  local w = o and r == true
+  PXG_MAP[key] = w
+  map_dirty = true
+  return w
+end
+
+
 local function readCmd()
-  local f = io.open(CMD, "r")
+  -- Drenado atomico: renombra el archivo y lo lee. Lo que Python agregue
+  -- despues del rename va a un CMD nuevo y se procesa en el siguiente tick,
+  -- asi no se pierde ninguna orden.
+  local tmp = CMD .. ".tmp"
+  local drained = false
+  if os and os.rename then drained = os.rename(CMD, tmp) end
+  local path = drained and tmp or CMD
+  local f = io.open(path, "r")
   if not f then return nil end
   local s = f:read("*a"); f:close()
-  local removed = false
-  if os and os.remove then removed = os.remove(CMD) end
-  if not removed then
+  if drained then
+    pcall(function() os.remove(tmp) end)
+  else
     local w = io.open(CMD, "w"); if w then w:close() end
   end
   return s
@@ -57,65 +117,719 @@ local function creatureAt(x, y, z)
   return nil
 end
 
+local function getMapWidget()
+  local ok, root = pcall(function() return g_ui.getRootWidget() end)
+  if not ok or not root then return nil end
+  local found = nil
+  local function scan(w, d)
+    if not w or d < 0 or found then return end
+    local okc, cl = pcall(function() return w:getClassName() end)
+    local oid, id = pcall(function() return w:getId() end)
+    if okc and cl == "UIGameMap" and id == "gameMapPanel" then found = w; return end
+    local okd, ch = pcall(function() return w:getChildren() end)
+    if okd and ch then for _, c in ipairs(ch) do scan(c, d - 1) end end
+  end
+  scan(root, 8)
+  return found
+end
+
+local function tileToScreen(tx, ty)
+  local mp = g_game.getMapPanel()
+  if not mp then return nil end
+  local ts = mp:getTileSize()
+  local cam = mp:getCameraPosition()
+  local rect = mp:getRect()
+  if not ts or not cam or not rect then return nil end
+  local cx = rect.x + rect.width / 2.0
+  local cy = rect.y + rect.height / 2.0
+  return cx + (tx - cam.x) * ts.width, cy + (ty - cam.y) * ts.height
+end
+
+local function clickTile(x, y, z, button)
+  local sx, sy = tileToScreen(x, y)
+  if not sx then return "no-screen" end
+  local panel = getMapWidget()
+  if not panel then return "no-panel" end
+  local mb = MouseButton.Left
+  if button == "right" then mb = MouseButton.Right
+  elseif button == "middle" then mb = MouseButton.Middle end
+  local ok, res = pcall(function()
+    panel:onMouseDown({ x = sx, y = sy }, mb)
+    return panel:onMouseUp({ x = sx, y = sy }, mb)
+  end)
+  if not ok then return "err:" .. tostring(res):sub(1, 60) end
+  return "clicked:" .. string.format("%.1f,%.1f", sx, sy) .. " " .. tostring(res)
+end
+
+local DIRS = { {0,-1}, {1,-1}, {1,0}, {1,1}, {0,1}, {-1,1}, {-1,0}, {-1,-1} }
+local DIRIDX = { ["0,-1"]=0, ["1,0"]=1, ["0,1"]=2, ["-1,0"]=3,
+                 ["1,-1"]=4, ["1,1"]=5, ["-1,1"]=6, ["-1,-1"]=7 }
+
+-- BFS propio sobre los tiles del cliente. El g_map.findPath del cliente falla
+-- para destinos con obstaculo (devuelve path vacio), lo que dejaba al greedy
+-- oscilando. Este BFS encuentra el rodeo.
+local function walkTile(x, y, z)
+  -- el tile donde esta parado nuestro pokemon tambien es viable/caminable
+  -- (el pokemon se aparta). Sin esto, el loot descartaba ese tile.
+  local pp = PXG_POKE_POS
+  if pp and pp.x == x and pp.y == y and pp.z == z then return true end
+  local ok, t = pcall(g_map.getTile, { x = x, y = y, z = z })
+  if not ok or not t then return false end
+  local okw, w = pcall(function() return t:isWalkable() end)
+  return okw and w == true
+end
+
+-- tile caminable mas cercano (el bot puede pedir un segmento que caiga en un
+-- tile no caminable; sin esto el nav queda en greedy oscilando).
+local function nearestWalkable(x, y, z, maxr)
+  if walkTile(x, y, z) then return x, y end
+  maxr = maxr or 5
+  for r = 1, maxr do
+    for dx = -r, r do
+      for dy = -r, r do
+        if math.max(math.abs(dx), math.abs(dy)) == r and walkTile(x + dx, y + dy, z) then
+          return x + dx, y + dy
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local function bfsPathDirs(sx, sy, gx, gy, z, maxr)
+  maxr = maxr or 24
+  local function walk(x, y)
+    return walkTile(x, y, z)
+  end
+  if not walk(gx, gy) then return nil end
+  local q = { { sx, sy } }
+  local seen = { [sx .. "," .. sy] = true }
+  local prev = {}
+  local head = 1
+  local found = false
+  while head <= #q and #q < 8000 do
+    local c = q[head]; head = head + 1
+    if c[1] == gx and c[2] == gy then found = true; break end
+    for _, d in ipairs(DIRS) do
+      local nx, ny = c[1] + d[1], c[2] + d[2]
+      local k = nx .. "," .. ny
+      if not seen[k] and math.max(math.abs(nx - sx), math.abs(ny - sy)) <= maxr and walk(nx, ny) then
+        seen[k] = true
+        prev[k] = c[1] .. "," .. c[2]
+        q[#q + 1] = { nx, ny }
+      end
+    end
+  end
+  if not found then return nil end
+  local path = {}
+  local cx, cy = gx, gy
+  while not (cx == sx and cy == sy) do
+    local pk = prev[cx .. "," .. cy]
+    if not pk then return nil end
+    local px, py = pk:match("(-?%d+),(-?%d+)")
+    px, py = tonumber(px), tonumber(py)
+    local d = DIRIDX[(cx - px) .. "," .. (cy - py)]
+    if not d then return nil end
+    table.insert(path, 1, d)
+    cx, cy = px, py
+  end
+  return path
+end
+
+-- Devuelve la lista de direcciones (OT dir) desde (sx,sy) hasta (gx,gy).
+local function findPathDirs(sx, sy, gx, gy, z)
+  local ok, path = pcall(g_map.findPath, { x = sx, y = sy, z = z }, { x = gx, y = gy, z = z }, 128, 0)
+  if ok and type(path) == "table" and #path > 0 then return path end
+  return bfsPathDirs(sx, sy, gx, gy, z)
+end
+
+local function pathLen(sx, sy, gx, gy, z)
+  if sx == gx and sy == gy then return 0 end
+  local path = findPathDirs(sx, sy, gx, gy, z)
+  return path and #path or nil
+end
+
+-- Devuelve la lista de celdas disponibles adyacentes (8) a un cuerpo.
+-- Primero escanea un area alrededor del cuerpo para poblar el cache del mapa.
+local function adjacentsOf(x, y, z)
+  local out = {}
+  for i = 1, 8 do
+    out[#out + 1] = { x + DIRS[i][1], y + DIRS[i][2] }
+  end
+  return out
+end
+
+-- Elige el mejor destino para cubrir uno o varios cuerpos.
+-- Se evalua TODA la caja del grupo expandida 1 tile (incluye los tiles de los
+-- propios cuerpos, que son transitables). El rango de loot es 1 (8 vecinos + el
+-- tile propio). Devuelve el tile, su score y la cobertura lograda.
+local function bestCoverTile(bodies, px, py, pz)
+  if #bodies == 0 then return nil, nil, 0 end
+  local minx, maxx = bodies[1][1], bodies[1][1]
+  local miny, maxy = bodies[1][2], bodies[1][2]
+  for _, b in ipairs(bodies) do
+    if b[1] < minx then minx = b[1] end
+    if b[1] > maxx then maxx = b[1] end
+    if b[2] < miny then miny = b[2] end
+    if b[2] > maxy then maxy = b[2] end
+  end
+  local cands = {}
+  for x = minx - 1, maxx + 1 do
+    for y = miny - 1, maxy + 1 do
+      local covered = 0
+      for _, b in ipairs(bodies) do
+        if math.max(math.abs(x - b[1]), math.abs(y - b[2])) <= 1 then covered = covered + 1 end
+      end
+      if covered > 0 then
+        local dist = math.max(math.abs(px - x), math.abs(py - y))
+        cands[#cands + 1] = { x = x, y = y, cov = covered, dist = dist }
+      end
+    end
+  end
+  if #cands == 0 then return nil, nil, 0 end
+  -- mejor cobertura primero; a igual cobertura, el mas cercano
+  table.sort(cands, function(a, b)
+    if a.cov ~= b.cov then return a.cov > b.cov end
+    return a.dist < b.dist
+  end)
+  -- devolver el primer candidato alcanzable. La alcanzabilidad es un filtro:
+  -- asi un tile con mas cobertura pero inalcanzable no gana a uno alcanzable.
+  local checks = 0
+  for _, c in ipairs(cands) do
+    if pathLen(px, py, c.x, c.y, pz) then
+      return { c.x, c.y }, c.cov, c.cov
+    end
+    checks = checks + 1
+    if checks >= 12 then break end
+  end
+  return { cands[1].x, cands[1].y }, cands[1].cov, cands[1].cov
+end
+
+-- Avance greedy de un paso hacia (tx,ty): prueba direcciones ordenadas por
+-- cercania resultante y ejecuta la primera que el motor acepte. Sirve cuando
+-- findPath falla (p. ej. tiles rodeados de cuerpos, que no bloquean el paso).
+local function stepToward(tx, ty, tz, avoid)
+  local lp = g_game.getLocalPlayer()
+  if not lp then return "no-player" end
+  local p = lp:getPosition()
+  if not p then return "no-pos" end
+  if p.x == tx and p.y == ty and p.z == tz then return "at" end
+  local order = {}
+  for i = 1, 8 do
+    local nx, ny = p.x + DIRS[i][1], p.y + DIRS[i][2]
+    local dd = math.max(math.abs(nx - tx), math.abs(ny - ty))
+    local diag = math.max(math.abs(DIRS[i][1]), math.abs(DIRS[i][2]))
+    local dnum = DIRIDX[DIRS[i][1] .. "," .. DIRS[i][2]]
+    local back = avoid and (nx == avoid.x and ny == avoid.y) or false
+    order[#order + 1] = { d = dnum, dd = dd, diag = diag, back = back }
+  end
+  table.sort(order, function(a, b)
+    -- no volver al tile anterior si hay alternativa
+    if a.back ~= b.back then return not a.back end
+    if a.dd ~= b.dd then return a.dd < b.dd end
+    return a.diag < b.diag
+  end)
+  for _, o in ipairs(order) do
+    local ok, moved = pcall(g_game.walk, o.d)
+    if ok and moved then return "step" .. o.d end
+  end
+  return "blocked"
+end
+
+-- Navegacion persistente: el agente recorre la ruta solo (autoWalk o pasos
+-- encadenados por isWalking), sin que Python reenvie el destino cada paso.
+local function clearNav()
+  PXG_NAV = nil
+  pcall(function() g_game.stop() end)
+end
+
+local function startNav(goal, path)
+  clearNav()
+  if not goal then return end
+  if path and #path > 0 then
+    local lp = g_game.getLocalPlayer()
+    local p = lp and lp:getPosition()
+    if p and g_game.autoWalk then
+      local ok = pcall(function()
+        return g_game.autoWalk(path, { x = p.x, y = p.y, z = p.z })
+      end)
+      if ok then PXG_NAV = { goal = goal, mode = "auto", path = path, t = 0 }; return end
+    end
+    PXG_NAV = { goal = goal, mode = "step", path = path, idx = 1, t = 0 }
+    return
+  end
+  PXG_NAV = { goal = goal, mode = "greedy", path = nil, t = 0 }
+end
+
+local function advanceNav()
+  if not PXG_NAV then return end
+  local lp = g_game.getLocalPlayer()
+  if not lp then return end
+  local p = lp:getPosition()
+  if not p then return end
+  local g = PXG_NAV.goal
+  if p.x == g.x and p.y == g.y and p.z == g.z then PXG_NAV = nil; return end
+  local okw, walking = pcall(function() return lp:isWalking() end)
+  if okw and walking then return end
+  if PXG_NAV.mode == "hold" then return end
+  -- en modo auto, el autoWalk del cliente conduce; no recalcular el path cada
+  -- tick (el BFS es costoso). Si se interrumpe, el bot reenvia el destino.
+  if PXG_NAV.mode == "auto" then return end
+  local now = 0
+  if g_clock and g_clock.millis then now = g_clock.millis() end
+  if now - (PXG_NAV.t or 0) < 20 then return end
+  PXG_NAV.t = now
+  if PXG_NAV.mode == "step" then
+    if PXG_NAV.path and PXG_NAV.idx <= #PXG_NAV.path then
+      pcall(g_game.walk, PXG_NAV.path[PXG_NAV.idx])
+      PXG_NAV.idx = PXG_NAV.idx + 1
+    else
+      PXG_NAV.mode = "greedy"
+    end
+    return
+  end
+  local path = findPathDirs(p.x, p.y, g.x, g.y, p.z)
+  if path and #path > 0 then
+    if g_game.autoWalk then
+      local ok = pcall(function()
+        return g_game.autoWalk(path, { x = p.x, y = p.y, z = p.z })
+      end)
+      if ok then PXG_NAV.mode = "auto"; PXG_NAV.path = path; return end
+    end
+    PXG_NAV.mode = "step"; PXG_NAV.path = path; PXG_NAV.idx = 1
+    pcall(g_game.walk, path[1]); PXG_NAV.idx = 2
+    return
+  end
+  local avoid = PXG_NAV.prev
+  local r = stepToward(g.x, g.y, p.z, avoid)
+  PXG_LAST_NAV = "greedy(" .. g.x .. "," .. g.y .. ") " .. r
+  if r:sub(1, 4) == "step" then
+    PXG_NAV.prev = { x = p.x, y = p.y }
+  end
+  if r == "blocked" and math.max(math.abs(p.x - g.x), math.abs(p.y - g.y)) <= 1 then
+    PXG_NAV = nil
+  end
+end
+
+-- Navega al tile que maximiza la cobertura del grupo. Si el tile actual ya
+-- cubre tanto como el mejor, no se mueve. Arranca la navegacion persistente.
+local function goCover(bodies, p)
+  local best, score, cov = bestCoverTile(bodies, p.x, p.y, p.z)
+  if not best then PXG_LAST_NAV = "no-adj"; return "no-adj" end
+  local nx, ny = nearestWalkable(best[1], best[2], p.z)
+  if nx then best = { nx, ny } end
+  local cur = 0
+  for _, b in ipairs(bodies) do
+    if math.max(math.abs(p.x - b[1]), math.abs(p.y - b[2])) <= 1 then cur = cur + 1 end
+  end
+  local tag = "cover(" .. best[1] .. "," .. best[2] .. ") cov=" .. cov .. "/" .. #bodies
+  if cur >= cov then PXG_LAST_NAV = tag .. " here=" .. cur; return "near" end
+  local path = findPathDirs(p.x, p.y, best[1], best[2], p.z)
+  PXG_LAST_NAV = tag .. (path and (" len=" .. #path) or " greedy")
+  startNav({ x = best[1], y = best[2], z = p.z }, path)
+  advanceNav()
+  return "nav-start"
+end
+
+local function parseBodies(arg, z)
+  local bodies = {}
+  for x, y in arg:gmatch("(-?%d+)%s+(-?%d+)") do
+    bodies[#bodies + 1] = { tonumber(x), tonumber(y), z }
+  end
+  return bodies
+end
+
+local function snapCreature(c)
+  local okp, cp = pcall(function() return c:getPosition() end)
+  if not okp or not cp then return nil end
+  local oid, id = pcall(function() return c.getId and c:getId() end)
+  local outfit_type = nil
+  if c.getOutfit then
+    local okO, o = pcall(function() return c:getOutfit() end)
+    if okO and type(o) == "table" then outfit_type = o.type end
+  end
+  local ownsummon = false
+  pcall(function() ownsummon = (c.isOwnSummon == true) end)
+  return {
+    id = tostring(oid and id or 0),
+    name = tostring(c:getName()), x = cp.x, y = cp.y, z = cp.z,
+    hp = c:getHealthPercent(),
+    player = isKind(c, "isPlayer"), monster = isKind(c, "isMonster"), npc = isKind(c, "isNpc"),
+    outfit = outfit_type, ownsummon = ownsummon,
+  }
+end
+
 local function exec(line)
   local op, arg = line:match("^%s*(%a+)%s*(.-)%s*$")
-  if op == "walk" then return g_game.walk(tonumber(arg))
-  elseif op == "loot" then return g_game.collectLoot()
+  local res
+  if op == "walk" then
+    clearNav()
+    res = g_game.walk(tonumber(arg))
+  elseif op == "rclick" then
+    clearNav()
+    local x, y, z = arg:match("(-?%d+)%s+(-?%d+)%s+(-?%d+)")
+    if x then res = clickTile(tonumber(x), tonumber(y), tonumber(z), "right") else res = "bad-pos" end
+  elseif op == "lclick" then
+    clearNav()
+    local x, y, z = arg:match("(-?%d+)%s+(-?%d+)%s+(-?%d+)")
+    if x then res = clickTile(tonumber(x), tonumber(y), tonumber(z), "left") else res = "bad-pos" end
+  elseif op == "mclick" then
+    -- clic central en un tile vacio: indica al pokemon que ya puede moverse
+    local x, y, z = arg:match("(-?%d+)%s+(-?%d+)%s+(-?%d+)")
+    if x then res = clickTile(tonumber(x), tonumber(y), tonumber(z), "middle") else res = "bad-pos" end
+  elseif op == "callslot" then
+    -- sacar al pokemon de un slot (callPokemonByIndex)
+    local idx = tonumber(arg)
+    local ok, gp = pcall(function() return modules.game_pokemon end)
+    if ok and gp and gp.callPokemonByIndex then
+      local okc = pcall(function() return gp.callPokemonByIndex(idx) end)
+      res = "callslot:" .. tostring(idx) .. " ok=" .. tostring(okc)
+    else
+      res = "no-gp"
+    end
+  elseif op == "clickslot" then
+    -- clic en un slot del equipo (revive: hotkey V + clic al slot)
+    local idx = tonumber(arg)
+    local ok, gp = pcall(function() return modules.game_pokemon end)
+    if ok and gp and gp.getPokemonWidgetByIndex then
+      local w = gp.getPokemonWidgetByIndex(idx)
+      if w then
+        local okc = pcall(function() return gp._onPokemonSlotClick(w) end)
+        res = "clickslot:" .. tostring(idx) .. " ok=" .. tostring(okc)
+      else
+        res = "no-slot:" .. tostring(idx)
+      end
+    else
+      res = "no-gp"
+    end
+  elseif op == "revive" then
+    -- aplica el item (revive) sobre el Thing bajo el cursor. El bot mueve el
+    -- cursor fisico al slot antes de enviar este comando.
+    local itemId = tonumber(arg) or 2269
+    local okcp, cp = pcall(function() return g_mouse.getCursorPosition() end)
+    if not okcp or not cp then res = "revive no-cursor" else
+      local okt, thing = pcall(function() return g_gameActions.getThingByMousePosition(cp) end)
+      if not okt or not thing then res = "revive no-thing" else
+        local oku, err = pcall(function() return g_gameActions.useInventoryItemWith(itemId, thing) end)
+        res = "revive item=" .. tostring(itemId) .. " ok=" .. tostring(oku) .. " err=" .. tostring(err)
+      end
+    end
+  elseif op == "thingat" then
+    local x, y, z = arg:match("(-?%d+)%s+(-?%d+)%s+(-?%d+)")
+    if x then
+      local sx, sy = tileToScreen(tonumber(x), tonumber(y))
+      if sx then
+        local ok, t = pcall(g_gameActions.getCreatureOrMapThingByMousePosition, { x = sx, y = sy })
+        res = ok and tostring(t) or ("err:" .. tostring(t):sub(1, 50))
+      end
+    end
+  elseif op == "loot" then res = g_game.collectLoot()
+  elseif op == "pokestop" then
+    -- pokestop: para al pokemon. Metodos configurables:
+    --   pokestop            -> game_pokemon.pokeStop() (fallback talk)
+    --   pokestop talk [msg] -> g_game.talk(msg o "!pokestop")
+    local method, marg = arg:match("^(%a*)%s*(.*)$")
+    method = method or ""
+    if method == "talk" then
+      local msg = marg
+      if not msg or msg == "" then msg = "!pokestop" end
+      local okt = pcall(function() return g_game.talk(msg) end)
+      res = "pokestop talk msg=" .. tostring(msg) .. " ok=" .. tostring(okt)
+    else
+      local ok, gp = pcall(function() return modules.game_pokemon end)
+      if ok and gp and gp.pokeStop then
+        local okc = pcall(function() return gp.pokeStop() end)
+        res = "pokestop func ok=" .. tostring(okc)
+      else
+        res = "pokestop fallback=" .. tostring(g_game.talk("!pokestop"))
+      end
+    end
   elseif op == "nav" then
     local x, y, z = arg:match("(-?%d+)%s+(-?%d+)%s+(-?%d+)")
     local lp = g_game.getLocalPlayer()
     if x and lp then
       x, y, z = tonumber(x), tonumber(y), tonumber(z)
       local p = lp:getPosition()
-      local function tryPath(tx, ty)
-        local ok, path = pcall(g_map.findPath, p, { x = tx, y = ty, z = z }, 128, 0)
-        if ok and type(path) == "table" and #path > 0 then return path end
-        return nil
-      end
-      local path = tryPath(x, y)
-      if not path then
-        local cands = { { x + 1, y }, { x - 1, y }, { x, y + 1 }, { x, y - 1 },
-                        { x + 1, y + 1 }, { x - 1, y - 1 }, { x + 1, y - 1 }, { x - 1, y + 1 } }
-        for _, c in ipairs(cands) do
-          path = tryPath(c[1], c[2])
-          if path then break end
+      if not p then res = "no-pos" else
+        local nx, ny = nearestWalkable(x, y, z)
+        if nx then x, y = nx, ny end
+        if p.x == x and p.y == y and p.z == z then PXG_LAST_NAV = "at"; res = "at" else
+          local path = findPathDirs(p.x, p.y, x, y, z)
+          startNav({ x = x, y = y, z = z }, path)
+          if path == nil then PXG_LAST_NAV = "nav(" .. x .. "," .. y .. ") greedy" else
+            PXG_LAST_NAV = "nav(" .. x .. "," .. y .. ") len=" .. #path
+          end
+          advanceNav()
+          res = "nav-start"
         end
       end
-      if path then return g_game.walk(path[1]) end
-      return "no-path"
+    else
+      res = "bad-pos"
     end
-    return "bad-pos"
-  elseif op == "turn" then return g_game.turn(tonumber(arg))
-  elseif op == "stop" then return g_game.stop()
-  elseif op == "cancelattack" then return g_game.cancelAttack()
-  elseif op == "useinv" then return g_game.useInventoryItem(tonumber(arg))
-  elseif op == "say" then return g_game.talk(arg)
+  elseif op == "cover" then
+    -- cover z x1 y1 x2 y2 ... : test, devuelve el mejor tile de cobertura
+    local parts = {}
+    for tok in arg:gmatch("%S+") do parts[#parts + 1] = tonumber(tok) end
+    if #parts >= 3 then
+      local z = parts[1]
+      local bodies = {}
+      local i = 2
+      while i + 1 <= #parts do bodies[#bodies + 1] = { parts[i], parts[i + 1], z }; i = i + 2 end
+      local lp = g_game.getLocalPlayer()
+      local p = lp and lp:getPosition()
+      if p then
+        local best, score, cov = bestCoverTile(bodies, p.x, p.y, p.z)
+        if best then res = "cover " .. best[1] .. "," .. best[2] .. " cov=" .. tostring(cov) .. " from=" .. p.x .. "," .. p.y
+        else res = "cover none" end
+      else res = "no-pos" end
+    else res = "bad" end
+  elseif op == "navpath" then
+    -- navpath z x1 y1 x2 y2 ... : recorre una lista de tiles con autoWalk
+    local parts = {}
+    for tok in arg:gmatch("%S+") do parts[#parts + 1] = tonumber(tok) end
+    local lp = g_game.getLocalPlayer()
+    if #parts >= 3 and lp then
+      local z = parts[1]
+      local wps = {}
+      local i = 2
+      while i + 1 <= #parts do wps[#wps + 1] = { x = parts[i], y = parts[i + 1], z = z }; i = i + 2 end
+      local p = lp:getPosition()
+      local dirs = {}
+      local cx, cy = p.x, p.y
+      for _, w in ipairs(wps) do
+        local dx = (w.x > cx) and 1 or ((w.x < cx) and -1 or 0)
+        local dy = (w.y > cy) and 1 or ((w.y < cy) and -1 or 0)
+        local d = DIRIDX[dx .. "," .. dy]
+        if d then dirs[#dirs + 1] = d; cx, cy = w.x, w.y end
+      end
+      if #dirs > 0 then
+        clearNav()
+        local ok = pcall(function() return g_game.autoWalk(dirs, { x = p.x, y = p.y, z = p.z }) end)
+        if ok then
+          PXG_NAV = { goal = wps[#wps], mode = "hold", t = 0 }
+          PXG_LAST_NAV = "navpath n=" .. #dirs .. " goal=" .. wps[#wps].x .. "," .. wps[#wps].y
+          res = "navpath"
+        else
+          PXG_LAST_NAV = "navpath-autowalk-fail"; res = "navpath-err"
+        end
+      else
+        PXG_LAST_NAV = "navpath-at"; res = "at"
+      end
+    else
+      res = "bad-args"
+    end
+  elseif op == "standnear" then
+    -- standnear x y z : ir a la mejor casilla (1 tile, incluye el cuerpo) del cuerpo
+    local x, y, z = arg:match("(-?%d+)%s+(-?%d+)%s+(-?%d+)")
+    local lp = g_game.getLocalPlayer()
+    if x and lp then
+      x, y, z = tonumber(x), tonumber(y), tonumber(z)
+      local p = lp:getPosition()
+      if not p then res = "no-pos" else
+        if math.max(math.abs(p.x - x), math.abs(p.y - y)) <= 1 and p.z == z then
+          PXG_LAST_NAV = "already-near"; res = "near"
+        else
+          res = goCover({ { x, y, z } }, p)
+        end
+      end
+    else
+      res = "bad-pos"
+    end
+  elseif op == "standnearmany" then
+    -- standnearmany z x1 y1 x2 y2 ... : ir a la casilla que cubra mas cuerpos
+    local parts = {}
+    for tok in arg:gmatch("%S+") do parts[#parts + 1] = tonumber(tok) end
+    local lp = g_game.getLocalPlayer()
+    if #parts >= 3 and lp then
+      local z = parts[1]
+      local bodies = {}
+      local i = 2
+      while i + 1 <= #parts do bodies[#bodies + 1] = { parts[i], parts[i + 1], z }; i = i + 2 end
+      local p = lp:getPosition()
+      if not p then res = "no-pos" else
+        res = goCover(bodies, p)
+      end
+    else
+      res = "bad-args"
+    end
+  elseif op == "debugcover" then
+    -- debugcover z x1 y1 x2 y2 ... : muestra el tile elegido y su cobertura (no mueve)
+    local parts = {}
+    for tok in arg:gmatch("%S+") do parts[#parts + 1] = tonumber(tok) end
+    local lp = g_game.getLocalPlayer()
+    if #parts >= 3 and lp then
+      local z = parts[1]
+      local bodies = {}
+      local i = 2
+      while i + 1 <= #parts do bodies[#bodies + 1] = { parts[i], parts[i + 1], z }; i = i + 2 end
+      local p = lp:getPosition()
+      local best, score, cov = bestCoverTile(bodies, p.x, p.y, p.z)
+      res = string.format("player=%d,%d n=%d best=%s cov=%s score=%s", p.x, p.y, #bodies,
+        best and (best[1] .. "," .. best[2]) or "nil", tostring(cov), tostring(score))
+    else
+      res = "bad-args"
+    end
+  elseif op == "debugnear" then
+    local x, y, z = arg:match("(-?%d+)%s+(-?%d+)%s+(-?%d+)")
+    local lp = g_game.getLocalPlayer()
+    if x and lp then
+      x, y, z = tonumber(x), tonumber(y), tonumber(z)
+      local p = lp:getPosition()
+      local adj = adjacentsOf(x, y, z)
+      local parts = {}
+      for _, a in ipairs(adj) do parts[#parts + 1] = a[1] .. "," .. a[2] end
+      local best, score = bestCoverTile({ { x, y, z } }, p.x, p.y, p.z)
+      local bl = best and pathLen(p.x, p.y, best[1], best[2], p.z)
+      res = string.format("player=%d,%d nAdj=%d [%s] best=%s score=%s len=%s",
+        p.x, p.y, #adj, table.concat(parts, " "),
+        best and (best[1] .. "," .. best[2]) or "nil", tostring(score), tostring(bl))
+    else
+      res = "bad-pos"
+    end
+  elseif op == "scanmap" then
+    local r = tonumber(arg) or 10
+    local lp = g_game.getLocalPlayer()
+    if lp then
+      local p = lp:getPosition()
+      local n = 0
+      for dx = -r, r do
+        for dy = -r, r do
+          tileWalkable(p.x + dx, p.y + dy, p.z)
+          n = n + 1
+        end
+      end
+      saveMap()
+      res = "scanned:" .. n
+    else
+      res = "no-player"
+    end
+  elseif op == "savemap" then
+    saveMap(); res = "saved"
+  elseif op == "hotkey" then
+    -- hotkey F4 : dispara el boton de la barra de acciones cuya hotkey coincide
+    local want = tostring(arg)
+    local found = false
+    local ok_root, root = pcall(function() return g_ui.getRootWidget() end)
+    if ok_root and root then
+      local ok_bar, bar = pcall(function() return root:recursiveGetChildById("actionBar") end)
+      if ok_bar and bar then
+        local ok_kids, kids = pcall(function() return bar:getChildren() end)
+        if ok_kids and kids then
+          for _, w in ipairs(kids) do
+            local ak = w:getChildById("actionKey")
+            if ak then
+              local okt, t = pcall(function() return ak:getText() end)
+              if okt and tostring(t) == want then
+                local click = { x = w:getWidth() / 2, y = w:getHeight() / 2 }
+                local okd = pcall(function() w:onMouseDown(click, MouseButton.Left) end)
+                local oku = pcall(function() w:onMouseUp(click, MouseButton.Left) end)
+                res = "hotkey:" .. want .. " slot=" .. tostring(w:getId()) .. " ok=" .. tostring(okd and oku)
+                found = true
+                break
+              end
+            end
+          end
+        end
+      end
+    end
+    if not found then
+      -- fallback: sintetizar la tecla
+      local code = nil
+      if g_keyboard and g_keyboard.getKey then
+        local ok, c = pcall(function() return g_keyboard.getKey(want) end)
+        if ok and c then code = c end
+      end
+      if code and root then
+        pcall(function() root:onKeyDown(code, 0) end)
+        res = "hotkey-key:" .. want .. " code=" .. tostring(code)
+      else
+        res = "no-slot:" .. want
+      end
+    end
+  elseif op == "turn" then res = g_game.turn(tonumber(arg))
+  elseif op == "stop" then clearNav(); res = g_game.stop()
+  elseif op == "cancelattack" then res = g_game.cancelAttack()
+  elseif op == "debugcreatures" then
+    local lp = g_game.getLocalPlayer()
+    if lp then
+      local p = lp:getPosition()
+      local parts = {}
+      local seen = {}
+      local R = 16
+      for dx = -R, R do
+        for dy = -R, R do
+          local okq, t = pcall(g_map.getTile, { x = p.x + dx, y = p.y + dy, z = p.z })
+          if okq and t then
+            local okc, crs = pcall(function() return t:getCreatures() end)
+            if okc and crs then
+              for _, cc in ipairs(crs) do
+                local sc = snapCreature(cc)
+                if sc then
+                  local key = sc.name .. "@" .. sc.x .. "," .. sc.y
+                  if not seen[key] then
+                    seen[key] = true
+                    parts[#parts + 1] = string.format("%s(%d,%d) hp=%s outfit=%s mon=%s",
+                      sc.name, sc.x, sc.y, tostring(sc.hp), tostring(sc.outfit), tostring(sc.monster))
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+      res = table.concat(parts, " | ")
+    else
+      res = "no-player"
+    end
+  elseif op == "useinv" then res = g_game.useInventoryItem(tonumber(arg))
+  elseif op == "say" then res = g_game.talk(arg)
   elseif op == "attackat" then
+    clearNav()
     local x, y, z = arg:match("(-?%d+)%s+(-?%d+)%s+(-?%d+)")
     local c = creatureAt(tonumber(x), tonumber(y), tonumber(z))
-    if c then return g_game.attack(c) end
-    return "no-creature"
-  elseif op == "key" then
-    if g_keyboard and g_keyboard.pressKey then return g_keyboard.pressKey(arg, "", "", "") end
-    return "no-keyboard"
+    if c then res = g_game.attack(c) else res = "no-creature" end
+  elseif op == "spell" or op == "key" then
+    local want = tostring(arg)
+    local found = false
+    local ok_root, root = pcall(function() return g_ui.getRootWidget() end)
+    if ok_root and root then
+      local ok_bar, bar = pcall(function() return root:recursiveGetChildById("movesBar") end)
+      if ok_bar and bar then
+        local ok_kids, kids = pcall(function() return bar:getChildren() end)
+        if ok_kids and kids then
+          for _, w in ipairs(kids) do
+            local hk = w:getChildById("moveHotkey")
+            if hk then
+              local ok_t, t = pcall(function() return hk:getText() end)
+              if ok_t and tostring(t) == want then
+                if w.cast then
+                  local ok_c, r = pcall(function() return w:cast() end)
+                  res = ok_c and ("cast:" .. want) or ("cast-err:" .. tostring(r))
+                else
+                  local ok_c, r = pcall(function() return w:onClick() end)
+                  res = ok_c and ("click:" .. want) or ("cast-err:" .. tostring(r))
+                end
+                found = true
+                break
+              end
+            end
+          end
+        end
+      end
+    end
+    if not found then res = "no-move:" .. want end
+  else
+    res = "unknown:" .. tostring(op)
   end
-  return "unknown:" .. tostring(op)
-end
-
-local function snapCreature(c)
-  local okp, cp = pcall(function() return c:getPosition() end)
-  if not okp or not cp then return nil end
-  return {
-    name = tostring(c:getName()), x = cp.x, y = cp.y, z = cp.z,
-    hp = c:getHealthPercent(),
-    player = isKind(c, "isPlayer"), monster = isKind(c, "isMonster"), npc = isKind(c, "isNpc"),
-  }
+  PXG_LAST_CMD = tostring(op) .. " -> " .. tostring(res)
+  return res
 end
 
 local function snapshot()
   local lp = g_game.getLocalPlayer()
   if not lp then return { connected = false } end
   local p = lp:getPosition()
+  if not p then return { connected = false } end
   local st = {
     connected = true, name = lp:getName(),
     hp = lp:getHealth(), maxhp = lp:getMaxHealth(), hppct = lp:getHealthPercent(),
@@ -130,13 +844,23 @@ local function snapshot()
       return ok and cc and tostring(cc:getName()) or ""
     end)(),
     creatures = {}, nearby = {}, battle = {}, moves = {}, bag = {},
+    nav_result = tostring(PXG_LAST_NAV or ""),
+    last_cmd = tostring(PXG_LAST_CMD or ""),
+    is_walking = (function()
+      local ok, w = pcall(function() return lp:isWalking() end)
+      return ok and w or false
+    end)(),
   }
   local center = (g_map.getCentralPosition and g_map.getCentralPosition()) or p
   local ok, specs = pcall(g_map.getSpectators, g_map, center, false)
   if ok and type(specs) == "table" then
     for i, c in ipairs(specs) do
       local sc = snapCreature(c)
-      if sc then sc.id = i; st.creatures[#st.creatures + 1] = sc end
+      if sc then
+        if not sc.id or sc.id == "0" then sc.id = "spec" .. i end
+        sc.slot = i
+        st.creatures[#st.creatures + 1] = sc
+      end
     end
   end
   local R = PXG_SCAN_RADIUS or 20
@@ -160,6 +884,31 @@ local function snapshot()
   end
   local okr, root = pcall(function() return g_ui.getRootWidget() end)
   if okr and root then
+    -- mapa de spells del pokemon activo: trigger(m1..m9) -> {aoe, name}
+    local spell_by_trigger = {}
+    local okS, spells = pcall(function() return modules.game_pokemon.getActivePokemonSpells() end)
+    if okS and type(spells) == "table" and type(spells["pve"]) == "table" then
+      for _, sp in pairs(spells["pve"]) do
+        if type(sp) == "table" then
+          local aoe = false
+          if type(sp.type) == "table" then
+            for _, tv in pairs(sp.type) do
+              if tostring(tv) == "aoe" then aoe = true end
+            end
+          end
+          local tr = tostring(sp.trigger or "")
+          if tr ~= "" then
+            local eff = sp.effect
+            if type(eff) == "table" then
+              local parts = {}
+              for _, v in pairs(eff) do parts[#parts + 1] = tostring(v) end
+              eff = table.concat(parts, "/")
+            end
+            spell_by_trigger[tr] = { aoe = aoe, name = tostring(sp.name or ""), effect = tostring(eff or "") }
+          end
+        end
+      end
+    end
     local okm, bar = pcall(function() return root:recursiveGetChildById("movesBar") end)
     if okm and bar then
       local okk, kids = pcall(function() return bar:getChildren() end)
@@ -178,11 +927,63 @@ local function snapshot()
               if ok2 and type(p) == "number" then pct = p end
             end
             if ok1 and k and k ~= "" then
-              st.moves[#st.moves + 1] = { key = tostring(k), pct = pct }
+              local info = spell_by_trigger["m" .. tostring(k)]
+              st.moves[#st.moves + 1] = {
+                key = tostring(k), pct = pct,
+                aoe = (info and info.aoe) or false,
+                name = (info and info.name) or "",
+                effect = (info and info.effect) or "",
+              }
             end
           end
         end
       end
+    end
+  end
+
+  -- equipo (party): slots con su hp
+  st.party = {}
+  st.slot_pos = {}
+  st.win_pos = { x = 0, y = 0 }
+  pcall(function()
+    local wp = g_window.getPosition()
+    if wp then st.win_pos = { x = wp.x, y = wp.y } end
+  end)
+  local okgp, gp = pcall(function() return modules.game_pokemon end)
+  if okgp and gp and gp.getPokemonWidgetByIndex then
+    for i = 1, 6 do
+      local okw, w = pcall(function() return gp.getPokemonWidgetByIndex(i) end)
+      if okw and w then
+        local sb = w:getChildById("sidePanel")
+        local stb = sb and sb:getChildById("statusBars")
+        local hb = stb and stb:getChildById("healthBar")
+        local pct = 100
+        if hb then
+          local okp, p = pcall(function() return hb:getPercent() end)
+          if okp and type(p) == "number" then pct = p end
+        end
+        local wid = select(2, pcall(function() return w:getId() end))
+        local id = tostring(wid):match("pokePanel%-(%d+)")
+        st.party[#st.party + 1] = { slot = i, id = id, hp = pct }
+        local slotw = w:getChildById("pokemonSlot")
+        if slotw then
+          local okr, r = pcall(function() return slotw:getRect() end)
+          if okr and r then
+            st.slot_pos[tostring(i)] = {
+              x = r.x + math.floor(r.width / 2),
+              y = r.y + math.floor(r.height / 2),
+            }
+          end
+        end
+      end
+    end
+  end
+  -- nombre del pokemon activo (para mapear sus habilidades)
+  st.active_pokemon = ""
+  if okgp and gp and gp.getActivePokemonInfo then
+    local oka, info = pcall(function() return gp.getActivePokemonInfo() end)
+    if oka and type(info) == "table" and info.name then
+      st.active_pokemon = tostring(info.name)
     end
   end
 
@@ -197,9 +998,17 @@ local function snapshot()
           if oc and cr then
             local okq, cp = pcall(function() return cr:getPosition() end)
             local okn, nm = pcall(function() return cr:getName() end)
+            local oid, cid = pcall(function() return cr.getId and cr:getId() end)
+            local ofit = nil
+            if cr.getOutfit then
+              local oO, of = pcall(function() return cr:getOutfit() end)
+              if oO and type(of) == "table" then ofit = of.type end
+            end
             st.battle[#st.battle + 1] = {
+              id = tostring(oid and cid or 0),
               name = tostring(okn and nm or "?"), own = (i == 1),
               x = okq and cp.x or 0, y = okq and cp.y or 0, z = okq and cp.z or 0,
+              outfit = ofit,
             }
           end
         end
@@ -214,6 +1023,14 @@ local function snapshot()
     if okrc and rct then
       st.map_rect = { x = rct.x, y = rct.y, w = rct.width, h = rct.height }
     end
+    local okts, tsz = pcall(function() return mp:getTileSize() end)
+    if okts and tsz then
+      st.tile_size = { w = tsz.width, h = tsz.height }
+    end
+    local okvd, vd = pcall(function() return mp:getVisibleDimension() end)
+    if okvd and vd then
+      st.visible = { w = vd.width, h = vd.height }
+    end
   end
   local okc, conts = pcall(function() return g_game.getContainers() end)
   if okc and conts then
@@ -227,10 +1044,124 @@ local function snapshot()
       end
     end
   end
+  PXG_TRACK = PXG_TRACK or {}
+  local nowms = 0
+  if g_clock and g_clock.millis then nowms = g_clock.millis() end
+  local cur = {}
+  local inbattle = {}
+  for _, c in ipairs(st.creatures) do
+    if c.id and c.id ~= "0" then cur[c.id] = c end
+  end
+  for _, b in ipairs(st.battle) do
+    if b.id and b.id ~= "0" then cur[b.id] = b; inbattle[b.id] = true end
+  end
+  for _, t in ipairs(st.nearby) do
+    for _, c in ipairs(t.creatures) do
+      if c.id and c.id ~= "0" then cur[c.id] = c end
+    end
+  end
+  for id, c in pairs(cur) do
+    local dist = math.max(math.abs(p.x - c.x), math.abs(p.y - c.y))
+    local prev = PXG_TRACK[id]
+    PXG_TRACK[id] = { id = id, name = c.name, x = c.x, y = c.y, z = c.z,
+                      monster = c.monster, player = c.player, t = nowms, d = dist,
+                      outfit = c.outfit,
+                      inbattle = inbattle[id] or (prev and prev.inbattle) }
+  end
+  st.defeated = {}
+  local seen_key = {}
+  for id, info in pairs(PXG_TRACK) do
+    if cur[id] then
+      -- sigue visible: no ha muerto
+    else
+      -- solo cuenta como derrotada si estaba en la lista de batalla del cliente
+      -- (criatura que estabamos peleando) o estaba pegada (<=2). Asi una
+      -- criatura que se aleja de la vista no genera un cuerpo falso.
+      local was_battle = info.inbattle == true
+      local close = (info.d or 99) <= 2
+      if info.monster and (was_battle or close)
+         and (nowms - (info.t or 0)) <= 2500 and (info.d or 99) <= 4 then
+        local dkey = tostring(info.name) .. "|" .. tostring(info.x) .. "|" .. tostring(info.y) .. "|" .. tostring(info.z)
+        if not seen_key[dkey] then
+          seen_key[dkey] = true
+          st.defeated[#st.defeated + 1] = { id = id, name = info.name, x = info.x, y = info.y, z = info.z }
+        end
+      end
+      PXG_TRACK[id] = nil
+    end
+  end
+  st.server_msgs = {}
+  local spawn_blocked = false
+  local captured = false
+  local seen_block = PXG_MSG_BLOCK or ""
+  local seen_capture = PXG_MSG_CAPTURE or ""
+  local latest = PXG_MSG_SEEN or ""
+  local ok_root, root = pcall(function() return g_ui.getRootWidget() end)
+  if ok_root and root then
+    local okc2, panel = pcall(function() return root:recursiveGetChildById("consoleContentPanel") end)
+    if okc2 and panel then
+      local okc3, tabs = pcall(function() return panel:getChildren() end)
+      if okc3 and tabs then
+        for _, tab in ipairs(tabs) do
+          local oid, id = pcall(function() return tab:getId() end)
+          local buf = tab:getChildById("consoleBuffer")
+          if buf then
+            local oke, kids = pcall(function() return buf:getChildren() end)
+            if oke and kids then
+              local first = math.max(1, #kids - 11)
+              for i = first, #kids do
+                local ot, txt = pcall(function() return kids[i]:getText() end)
+                if ot and type(txt) == "string" then
+                  if id == "Registro del Servidor" then st.server_msgs[#st.server_msgs + 1] = txt end
+                  local low = txt:lower()
+                  if low:find("bloqueado su respawn", 1, true) and txt ~= seen_block then
+                    spawn_blocked = true
+                    seen_block = txt
+                  end
+                  if low:find("has capturado", 1, true) and txt ~= seen_capture then
+                    captured = true
+                    seen_capture = txt
+                  end
+                end
+              end
+              local olt, last = pcall(function() return kids[#kids]:getText() end)
+              if olt and type(last) == "string" and #last > 0 then latest = last end
+            end
+          end
+        end
+      end
+    end
+  end
+  PXG_MSG_BLOCK = seen_block
+  PXG_MSG_CAPTURE = seen_capture
+  PXG_MSG_SEEN = latest
+  st.spawn_blocked = spawn_blocked
+  st.captured = captured
+  -- posicion y hp del pokemon propio (summon del jugador)
+  st.pokemon_pos = nil
+  st.pokemon_hp = nil
+  for _, c in ipairs(st.creatures) do
+    if c.ownsummon then
+      st.pokemon_pos = { x = c.x, y = c.y, z = c.z }; st.pokemon_hp = c.hp; break
+    end
+  end
+  if not st.pokemon_pos then
+    for _, t in ipairs(st.nearby) do
+      for _, c in ipairs(t.creatures) do
+        if c.ownsummon then
+          st.pokemon_pos = { x = c.x, y = c.y, z = c.z }; st.pokemon_hp = c.hp; break
+        end
+      end
+      if st.pokemon_pos then break end
+    end
+  end
+  -- el tile de MI pokemon (OwnSummon) cuenta como caminable para el loot
+  PXG_POKE_POS = st.pokemon_pos
   return st
 end
 
-local function tick()
+-- Tick rapido: comandos + navegacion persistente (fluidez)
+local function execTick()
   if PXG_GEN ~= mygen then return end
   pcall(function()
     local cmd = readCmd()
@@ -238,6 +1169,13 @@ local function tick()
       for line in cmd:gmatch("[^\n]+") do pcall(exec, line) end
     end
   end)
+  pcall(advanceNav)
+  pcall(function() PXG_EVENT_EXEC = g_eventDispatcher.schedule(execTick, 60) end)
+end
+
+-- Tick lento: snapshot pesado + guardar estado
+local function snapTick()
+  if PXG_GEN ~= mygen then return end
   local ok, st = pcall(snapshot)
   if not ok then st = { error = tostring(st) } end
   local oke, json = pcall(cjson.encode, st)
@@ -245,8 +1183,22 @@ local function tick()
     local f = io.open(STATE, "w")
     if f then f:write(json); f:close() end
   end
-pcall(function() g_game.changeAutoLoot(true) end)
-pcall(function() PXG_EVENT = g_eventDispatcher.schedule(tick, 200) end)
+  PXG_SAVET = (PXG_SAVET or 0) + 1
+  if PXG_SAVET % 25 == 0 then
+    local lp = g_game.getLocalPlayer()
+    if lp then
+      local p = lp:getPosition()
+      if p then
+        for dx = -8, 8 do
+          for dy = -8, 8 do tileWalkable(p.x + dx, p.y + dy, p.z) end
+        end
+      end
+    end
+    pcall(saveMap)
+  end
+  pcall(function() PXG_EVENT_SNAP = g_eventDispatcher.schedule(snapTick, 200) end)
 end
 
-pcall(function() PXG_EVENT = g_eventDispatcher.schedule(tick, 200) end)
+pcall(function() g_game.changeAutoLoot(true) end)
+pcall(function() PXG_EVENT_EXEC = g_eventDispatcher.schedule(execTick, 60) end)
+pcall(function() PXG_EVENT_SNAP = g_eventDispatcher.schedule(snapTick, 200) end)
