@@ -198,6 +198,7 @@ class Dashboard:
             "paused": bool(status.get("paused", False) or control.get("paused", False)),
             "behavior": playing or ("break" if status.get("chosen") == "break" else "idle"),
             "humanizer": status.get("humanizer", ""),
+            "counters": status.get("counters", {}),
             "uptime": status.get("uptime", 0),
             "loop": status.get("loop", 0),
             "name": state.get("name", ""),

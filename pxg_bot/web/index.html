@@ -43,6 +43,7 @@
         <span>nav: <code id="nav">—</code></span>
         <span>cmd: <code id="lastcmd">—</code></span>
       </div>
+      <div class="muted small" id="counters">—</div>
     </section>
 
     <section class="card">
@@ -64,9 +65,9 @@
       <div class="row"><label>Ball a todos</label><input type="checkbox" id="catchall" />
         <span class="muted small">derrotados</span></div>
       <div class="row"><label>Lure min</label><input type="number" id="aoemin" class="mini" min="1" max="20" value="5" style="width:64px" />
-        <span class="muted small">visibles para lurear</span></div>
-      <div class="row"><label>Grupito min</label><input type="number" id="grpmin" class="mini" min="1" max="20" value="2" style="width:64px" />
-        <span class="muted small">enemigos para parar y pegar</span></div>
+        <span class="muted small">visibles en pantalla para lurear</span></div>
+      <div class="row"><label>Lure tope</label><input type="number" id="lureto" class="mini" min="0" max="120" value="10" style="width:64px" />
+        <span class="muted small">s máximo juntando enemigos (0 = sin tope)</span></div>
       <div class="row"><label>En rango</label><input type="number" id="inrmin" class="mini" min="1" max="20" value="2" style="width:64px" />
         <span class="muted small">a rango para castear</span></div>
       <div class="row"><label>Rango ataque</label><input type="number" id="atkrange" class="mini" min="1" max="12" value="3" style="width:64px" />
@@ -77,8 +78,13 @@
         <span class="muted small">% HP del poke para lanzar todas las skills</span></div>
       <div class="row"><label>Skill lista %</label><input type="number" id="readypct" class="mini" min="1" max="100" value="100" style="width:64px" />
         <span class="muted small">cooldown para considerar la skill lista</span></div>
+      <div class="row"><label>Skill cada</label><input type="number" id="skillcd" class="mini" min="0" max="3" step="0.05" value="0.3" style="width:64px" />
+        <span class="muted small">s entre lanzamientos de skills</span></div>
       <div class="row"><label>Solo todos a rango</label><input type="checkbox" id="reqall" checked />
         <span class="muted small">no lanzar hasta que TODOS los de pantalla estén a rango (salvo HP pánico)</span></div>
+      <div class="row"><label>Idle inicio</label><input type="checkbox" id="idleen" checked />
+        <input type="number" id="idlesecs" class="mini" min="0" max="600" value="42" style="width:64px" />
+        <span class="muted small">s de espera al volver al waypoint 0 (primer loop)</span></div>
     </section>
 
     <section class="card">

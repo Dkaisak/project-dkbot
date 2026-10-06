@@ -161,6 +161,12 @@ class Bot:
         route = data.get("route")
         if isinstance(route, dict) and route.get("waypoints") is not None:
             self._apply_route(route)
+        # parametros del behavior de ruta (idle de inicio, etc.) en caliente
+        rbeh = data.get("route_behavior")
+        if isinstance(rbeh, dict) and rbeh:
+            for behavior in self.behaviors:
+                if behavior.name == "route":
+                    behavior.cfg.update(rbeh)
         order = data.get("order")
         if isinstance(order, (list, tuple)) and len(order) >= 2:
             key = (int(order[0]), int(order[1]))
@@ -252,6 +258,7 @@ class Bot:
             "uptime": round(time.time() - self.started_at, 1),
             "connected": bool(getattr(state, "connected", False)) if state else False,
             "humanizer": self.humanizer.profile,
+            "counters": dict(self.bb.counters),
             "updated": time.time(),
         }
         try:

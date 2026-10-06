@@ -14,8 +14,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from pxg_bot.behaviors import (Blackboard, CaptureBehavior, CombatBehavior, CrisisBehavior,
-                               LootBehavior, ReviveBehavior, SummonBehavior, RouteBehavior)
-from pxg_bot.lua_bridge import LuaStateSource
+                               LootBehavior, ReviveBehavior, SummonBehavior, RouteBehavior,
+                               summon_near_tile)
+from pxg_bot.lua_bridge import LuaBridge, LuaStateSource
 from pxg_bot.models import Creature, CreatureKind, GameState, Player, Pokemon, Vec3
 from pxg_bot.pathfinding import Route
 
@@ -33,9 +34,17 @@ class RecInput:
         self.ball_throws: list = []
         self.orders: list = []
         self.calls: list = []
+        self.stops: int = 0
+        self.pokestops: int = 0
 
     def set_fight_mode(self, mode: int) -> None:
         self.modes.append(int(mode))
+
+    def stop(self) -> None:
+        self.stops += 1
+
+    def pokestop(self, method: str = "func", arg: str = "") -> None:
+        self.pokestops += 1
 
     def call_slot(self, slot: int) -> None:
         self.calls.append(int(slot))
@@ -196,6 +205,42 @@ def test_revive_atomic() -> None:
     print("OK revive atomico: loot/captura ceden durante la secuencia")
 
 
+def test_capture_range() -> None:
+    """La ball se lanza desde <= range (4); si el cuerpo esta mas lejos, se acerca."""
+    bb = Blackboard()
+    st = make_state()
+    st.creatures = [Creature(cid=7, name="Shiny X", pos=Vec3(104, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, shiny=True)]
+    st.defeated = [{"id": "7", "name": "Shiny X", "x": 104, "y": 100, "z": 7}]
+    bb.update_corpses(st)
+    bb.notes.setdefault("looted_ids", set()).add("7")
+    st.creatures = []
+    cap = CaptureBehavior({"enabled": True, "catch_all": True, "ball_item": 2652,
+                           "interval": 0.0, "max_throws": 5, "range": 4}, {})
+    assert cap.evaluate(st, bb) is True
+    inp = RecInput()
+    cap.act(st, bb, inp)
+    assert inp.ball_throws == [(2652, 104, 100, 7)], f"a 4 tiles debe lanzar: {inp.ball_throws}"
+    assert inp.walks == [], "a 4 tiles no debe caminar"
+    # a 5 tiles -> se acerca, no lanza
+    bb2 = Blackboard()
+    st2 = make_state()
+    st2.creatures = [Creature(cid=9, name="Shiny Y", pos=Vec3(105, 100, 7), hp_pct=100,
+                              kind=CreatureKind.MONSTER, shiny=True)]
+    st2.defeated = [{"id": "9", "name": "Shiny Y", "x": 105, "y": 100, "z": 7}]
+    bb2.update_corpses(st2)
+    bb2.notes.setdefault("looted_ids", set()).add("9")
+    st2.creatures = []
+    cap2 = CaptureBehavior({"enabled": True, "catch_all": True, "ball_item": 2652,
+                            "interval": 0.0, "range": 4}, {})
+    assert cap2.evaluate(st2, bb2) is True
+    inp2 = RecInput()
+    cap2.act(st2, bb2, inp2)
+    assert inp2.ball_throws == [], f"a >4 no debe lanzar: {inp2.ball_throws}"
+    assert inp2.walks, "debe acercarse si esta a mas de 4"
+    print("OK capture: lanza desde <= 4 tiles y se acerca si esta mas lejos")
+
+
 def test_capture_uses_lua_ball() -> None:
     bb = Blackboard()
     st = make_state()
@@ -316,14 +361,16 @@ def test_lure_summon_orders() -> None:
     cb = CombatBehavior({"lure_aoe": True, "lure_summon": True, "lure_summon_radius": 3,
                          "ready_pct": 100, "cooldown": 0.0}, {}, _FakeWorld())
     inp = RecInput()
-    bb.notes["lure_state"] = "wait"
+    bb.notes["lure_state"] = "hold"
     cb.act(st, bb, inp)
-    assert inp.orders, "en 'wait' debe ordenar el ownsummon cerca del player"
+    assert inp.orders, "en 'hold' debe ordenar el ownsummon cerca del player"
+    assert inp.stops == 1, "en 'hold' debe parar la navegacion de la ruta"
+    assert bb.notes.get("lure_order_target"), "debe guardar el tile objetivo del order"
     ox, oy, oz = inp.orders[0]
     mm = _FakeOtmm()
     assert all(mm.pathable(ox + dx, oy + dy, oz)
                for dx in (-1, 0, 1) for dy in (-1, 0, 1))
-    print("OK lure: ordena el ownsummon cerca (vecinos libres) antes de pelear")
+    print("OK lure: en hold para la ruta y ordena el ownsummon (vecinos libres)")
 
 
 def test_shiny_observe() -> None:
@@ -385,33 +432,81 @@ def test_lure_combo_custom() -> None:
     print("OK combo del lure: usa exactamente la lista configurada")
 
 
-def test_lure_group_threshold() -> None:
-    """El lure no caza enemigos sueltos: necesita un grupito (lure_enter_min)."""
-    st1 = make_state()
-    st1.pokemon_pos = (100, 100, 7)
-    st1.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
-    st1.creatures = [Creature(cid=1, name="E1", pos=Vec3(103, 100, 7), hp_pct=100,
-                              kind=CreatureKind.MONSTER, is_wild=True)]
-    cb = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "lure_enter_min": 2,
-                         "lure_light_wait": 1.5, "ready_pct": 100, "cooldown": 0.0}, {})
-    # 1 enemigo -> NO ataca (sigue la ruta): no caza de uno en uno
-    assert cb.evaluate(st1, Blackboard()) is False, "no debe cazar a un enemigo suelto"
-    # 2 enemigos -> grupito -> lure ligero (pokestop+summon) y pelea en area
-    st2 = make_state()
-    st2.pokemon_pos = (100, 100, 7)
-    st2.moves = st1.moves
-    st2.creatures = st1.creatures + [
-        Creature(cid=2, name="E2", pos=Vec3(104, 100, 7), hp_pct=100,
+def test_lure_idle_to_hold() -> None:
+    """idle: caminar hasta X visibles -> hold; por debajo sigue la ruta."""
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
+    st.creatures = [Creature(cid=i, name=f"E{i}", pos=Vec3(105 + i, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, is_wild=True) for i in range(2)]
+    cb = CombatBehavior({"lure_aoe": True, "lure_visible_min": 3}, {})
+    assert cb.evaluate(st, Blackboard()) is False, "con menos de X sigue la ruta"
+    st.creatures.append(Creature(cid=9, name="E9", pos=Vec3(108, 100, 7), hp_pct=100,
+                                 kind=CreatureKind.MONSTER, is_wild=True))
+    bb = Blackboard()
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "hold"
+    print("OK lure: idle -> hold al juntar X visibles")
+
+
+def test_lure_hold_requires_all_in_range() -> None:
+    """hold: no pasa a fight hasta summon llegado + todos a rango; timeout -> resume."""
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
+    st.creatures = [
+        Creature(cid=1, name="E1", pos=Vec3(101, 100, 7), hp_pct=100,
+                 kind=CreatureKind.MONSTER, is_wild=True),
+        Creature(cid=2, name="E2", pos=Vec3(102, 100, 7), hp_pct=100,
+                 kind=CreatureKind.MONSTER, is_wild=True),
+        Creature(cid=3, name="E3", pos=Vec3(105, 100, 7), hp_pct=100,
                  kind=CreatureKind.MONSTER, is_wild=True),
     ]
+    cb = CombatBehavior({"lure_aoe": True, "lure_visible_min": 3, "attack_range": 3,
+                         "require_all_close": True, "hold_timeout": 100.0}, {})
+    bb = Blackboard()
+    bb.notes["lure_state"] = "hold"
+    bb.notes["lure_hold_start"] = time.time()
+    bb.notes["lure_order_target"] = (100, 100, 7)  # summon "llego"
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "hold", "con uno lejos sigue en hold"
+    st.creatures[2].pos = Vec3(103, 100, 7)        # ahora todos a rango
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "fight"
+    assert bb.notes.get("lure_pokestop") is True
+    # timeout sin agrupar -> resume
+    st.creatures[2].pos = Vec3(108, 100, 7)
     bb2 = Blackboard()
-    assert cb.evaluate(st2, bb2) is True, "con 2 debe entrar en lure ligero"
-    assert bb2.notes.get("lure_state") == "wait"
-    assert bb2.notes.get("lure_light") is True
-    # configurable: con lure_enter_min=3, 2 enemigos ya no bastan
-    cb3 = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "lure_enter_min": 3}, {})
-    assert cb3.evaluate(st2, Blackboard()) is False, "lure_enter_min debe respetarse"
-    print("OK lure: no caza sueltos, necesita grupito (lure_enter_min)")
+    bb2.notes["lure_state"] = "hold"
+    bb2.notes["lure_hold_start"] = time.time() - 999
+    bb2.notes["lure_order_target"] = (100, 100, 7)
+    cb.evaluate(st, bb2)
+    assert bb2.notes.get("lure_state") == "resume", "sin agrupar -> resume"
+    print("OK lure: hold exige summon llegado + todos a rango; timeout -> resume")
+
+
+def test_lure_fight_returns_to_hold() -> None:
+    """fight: si el gate cae de forma persistente, vuelve a hold a reagrupar."""
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
+    st.creatures = [
+        Creature(cid=1, name="E1", pos=Vec3(101, 100, 7), hp_pct=100,
+                 kind=CreatureKind.MONSTER, is_wild=True),
+        Creature(cid=2, name="E2", pos=Vec3(108, 100, 7), hp_pct=100,
+                 kind=CreatureKind.MONSTER, is_wild=True),  # lejos -> gate cae
+    ]
+    cb = CombatBehavior({"lure_aoe": True, "attack_range": 3, "require_all_close": True,
+                         "fight_recover_secs": 1.0, "cooldown": 0.0, "ready_pct": 100}, {})
+    bb = Blackboard()
+    bb.notes["lure_state"] = "fight"
+    inp = RecInput()
+    cb._lure_fight(st, bb, inp)
+    assert bb.notes.get("lure_state") == "fight", "aun no (recien cae)"
+    bb.notes["lure_fight_lost"] = time.time() - 5.0
+    cb._lure_fight(st, bb, inp)
+    assert bb.notes.get("lure_state") == "hold", "gate caido persistente -> hold"
+    print("OK lure: fight vuelve a hold si el gate cae de forma persistente")
 
 
 def test_gate_ignores_far_enemy() -> None:
@@ -506,7 +601,8 @@ def test_aoe_cast_order_respects_combo() -> None:
 
 
 def test_route_calls_pokemon() -> None:
-    """Al iniciar la ruta, el bot saca (callslot) el pokemon elegido."""
+    """Al iniciar la ruta, el bot saca (callslot) el pokemon elegido, salvo si ya
+    esta out (entonces lo deja)."""
     bb = Blackboard()
     st = make_state()
     st.party = [Pokemon(slot=2, name="Shiny fearow", hp_pct=100)]
@@ -516,21 +612,29 @@ def test_route_calls_pokemon() -> None:
     inp = RecInput()
     rb.act(st, bb, inp)
     assert inp.calls == [2], f"debe sacar el slot 2: {inp.calls}"
-    # ya esta activo -> no lo saca (evita retirarlo)
-    st.active_pokemon_name = "Shiny fearow"
+    # el slot ya esta out -> NO clickea
+    st.party[0].active = True
     rb2 = RouteBehavior({"enabled": True}, {}, Route.from_config([[110, 100, 7]]))
     rb2.set_pokemon("Shiny fearow", None)
     inp2 = RecInput()
     rb2.act(st, bb, inp2)
-    assert inp2.calls == [], f"si ya esta activo no debe llamar: {inp2.calls}"
-    # sin nombre (no capturado): usa el slot de reserva
-    st.active_pokemon_name = ""
+    assert inp2.calls == [], f"si el slot ya esta out no debe clickear: {inp2.calls}"
+    # activo detectado por nombre -> no lo saca
+    st.party[0].active = False
+    st.active_pokemon_name = "Shiny fearow"
     rb3 = RouteBehavior({"enabled": True}, {}, Route.from_config([[110, 100, 7]]))
-    rb3.set_pokemon("", 4)
+    rb3.set_pokemon("Shiny fearow", None)
     inp3 = RecInput()
     rb3.act(st, bb, inp3)
-    assert inp3.calls == [4], f"fallback por slot: {inp3.calls}"
-    print("OK ruta: saca el pokemon elegido al iniciar (por nombre o slot)")
+    assert inp3.calls == [], f"si ya esta activo por nombre no debe llamar: {inp3.calls}"
+    # sin nombre (no capturado): usa el slot de reserva
+    st.active_pokemon_name = ""
+    rb4 = RouteBehavior({"enabled": True}, {}, Route.from_config([[110, 100, 7]]))
+    rb4.set_pokemon("", 4)
+    inp4 = RecInput()
+    rb4.act(st, bb, inp4)
+    assert inp4.calls == [4], f"fallback por slot: {inp4.calls}"
+    print("OK ruta: saca el pokemon elegido al iniciar, salvo si ya esta out")
 
 
 def test_revive_uses_route_slot() -> None:
@@ -654,6 +758,177 @@ def test_buff_respects_gate() -> None:
     print("OK buff: respeta el gate (no sale si no todos a rango)")
 
 
+def test_revive_no_double_after_lag() -> None:
+    """Tras completar un revive, no arranca otro por lag; se rearma al recuperarse
+    o tras revive_retry_secs."""
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 0}]  # combo agotado
+    st.party = [Pokemon(slot=3, name="X", hp_pct=0)]                      # debilitado
+    rb = ReviveBehavior({"enabled": True, "slot": 3, "revive_retry_secs": 3.0}, {},
+                        {"attack_range": 3})
+    bb = Blackboard()
+    bb.notes["revive_ready"] = False          # acaba de completar un revive
+    bb.notes["revive_done"] = time.time()
+    assert rb.evaluate(st, bb) is False, "no debe revivir 2 veces por lag"
+    # fallback: si nunca se recupera, reintenta tras revive_retry_secs
+    bb.notes["revive_done"] = time.time() - 10.0
+    assert rb.evaluate(st, bb) is True, "reintento tras revive_retry_secs"
+    # recuperado (vivo y combo listo) -> rearma y luego revive con 'need'
+    bb2 = Blackboard()
+    bb2.notes["revive_ready"] = False
+    bb2.notes["revive_done"] = time.time()
+    st.party = [Pokemon(slot=3, name="X", hp_pct=100)]
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100}]
+    rb.evaluate(st, bb2)
+    assert bb2.notes.get("revive_ready") is True, "debe rearmarse al recuperarse"
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 0}]
+    bb2.notes["revive_done"] = time.time() - 5.0   # el revive ya fue hace rato
+    assert rb.evaluate(st, bb2) is True, "con 'need' de nuevo debe revivir"
+    print("OK revive: no se duplica por lag; se rearma al recuperarse")
+
+
+def test_lure_summon_arrival_grace() -> None:
+    """_summon_arrived: tolerancia de 1 tile o gracia temporal (no bloquear)."""
+    st = make_state()
+    st.pokemon_pos = (101, 100, 7)   # 1 tile del objetivo -> llegado
+    cb = CombatBehavior({"lure_summon": True, "summon_arrive_tolerance": 1,
+                         "summon_grace_secs": 3.0}, {})
+    bb = Blackboard()
+    bb.notes["lure_order_target"] = (100, 100, 7)
+    bb.notes["lure_order_at"] = time.time()
+    assert cb._summon_arrived(st, bb) is True, "a 1 tile debe contar como llegado"
+    st.pokemon_pos = (105, 100, 7)   # lejos y dentro de la gracia
+    assert cb._summon_arrived(st, bb) is False
+    bb.notes["lure_order_at"] = time.time() - 10.0   # paso la gracia
+    assert cb._summon_arrived(st, bb) is True, "tras la gracia no debe bloquear"
+    st.pokemon_pos = None
+    bb.notes["lure_order_at"] = time.time()
+    assert cb._summon_arrived(st, bb) is False, "sin posicion y sin gracia -> esperar"
+    print("OK lure: llegada del summon con tolerancia + gracia")
+
+
+def test_summon_never_on_player() -> None:
+    """El `order` del summon nunca apunta a 1 tile del personaje (minimo 2)."""
+    st = make_state(px=100, py=100)
+    otmm = _FakeOtmm()
+    for rad in (1, 2, 4, 8):
+        t = summon_near_tile(st, otmm, rad)
+        assert t is not None, f"deberia encontrar tile con radio {rad}"
+        d = max(abs(t.x - 100), abs(t.y - 100))
+        assert d >= 2, f"el order debe estar a >=2 tiles del player, no {d} (radio {rad})"
+    print("OK summon: el order nunca apunta a 1 tile del personaje (minimo 2)")
+
+
+def test_route_start_idle_toggle() -> None:
+    """El idle de inicio se puede activar/desactivar (start_idle_enabled)."""
+    st = make_state(px=100, py=100)
+    wps = [[100, 100, 7], [110, 100, 7]]
+    rb = RouteBehavior({"enabled": True, "start_idle_enabled": True, "start_idle_seconds": 99}, {},
+                       Route.from_config(wps, loop=True))
+    rb._looped = True
+    rb.act(st, Blackboard(), RecInput())
+    assert rb._idle_until > time.time(), "con idle activado debe esperar"
+    rb2 = RouteBehavior({"enabled": True, "start_idle_enabled": False, "start_idle_seconds": 99}, {},
+                        Route.from_config(wps, loop=True))
+    rb2._looped = True
+    rb2.act(st, Blackboard(), RecInput())
+    assert rb2._idle_until == 0.0, "con idle desactivado no debe esperar"
+    print("OK ruta: idle de inicio activable/desactivable")
+
+
+def test_lure_gather_timeout() -> None:
+    """Sin juntar X, tras lure_gather_timeout pasa a hold; 0 = sin tope; se
+    resetea al quedarse sin enemigos."""
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
+    st.creatures = [Creature(cid=1, name="E1", pos=Vec3(105, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, is_wild=True)]
+    cb = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "lure_gather_timeout": 10.0}, {})
+    bb = Blackboard()
+    assert cb.evaluate(st, bb) is False, "con 1 (<X) sigue la ruta"
+    assert bb.notes.get("lure_gather_start"), "debe arrancar el contador con el primer enemigo"
+    assert cb.evaluate(st, bb) is False, "aun no pasaron los 10s -> sigue"
+    bb.notes["lure_gather_start"] = time.time() - 11.0
+    assert cb.evaluate(st, bb) is True, "pasados los 10s -> hold"
+    assert bb.notes.get("lure_state") == "hold"
+    # tope 0 = sin tope
+    cb0 = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "lure_gather_timeout": 0}, {})
+    bb0 = Blackboard()
+    bb0.notes["lure_gather_start"] = time.time() - 100
+    assert cb0.evaluate(st, bb0) is False, "con tope 0 no debe forzar hold"
+    # sin enemigos -> se resetea
+    st0 = make_state()
+    st0.pokemon_pos = (100, 100, 7)
+    st0.moves = st.moves
+    bb2 = Blackboard()
+    bb2.notes["lure_gather_start"] = time.time()
+    cb.evaluate(st0, bb2)
+    assert bb2.notes.get("lure_gather_start") is None, "sin enemigos se resetea"
+    print("OK lure: tope de tiempo (10s) pasa a hold; 0 = sin tope; se resetea sin enemigos")
+
+
+def test_aoe_cooldown_spacing() -> None:
+    """Con cooldown>0 no se lanzan dos skills en el mismo instante."""
+    bb = Blackboard()
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100},
+                {"key": "8", "aoe": True, "effect": "damage", "pct": 100}]
+    st.creatures = [Creature(cid=1, name="E1", pos=Vec3(101, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, is_wild=True)]
+    cb = CombatBehavior({"lure_aoe": True, "ready_pct": 100, "cooldown": 0.5,
+                         "attack_range": 3, "require_all_close": False,
+                         "cast_min_in_range": 1}, {})
+    inp = RecInput()
+    cb._aoe_fight(st, bb, inp, st.creatures)
+    cb._aoe_fight(st, bb, inp, st.creatures)
+    assert len(inp.skills) == 1, f"con cooldown 0.5 solo debe lanzar 1: {inp.skills}"
+    print("OK skills: cooldown separa los lanzamientos")
+
+
+def test_luabridge_state_cache() -> None:
+    """El estado se cachea por mtime (no reparsea si no cambio)."""
+    import json as _json
+    import os as _os
+    import tempfile as _tmp
+    d = _tmp.mkdtemp()
+    sf = _os.path.join(d, "state.json")
+    with open(sf, "w") as fh:
+        _json.dump({"connected": True, "name": "A"}, fh)
+    b = LuaBridge({"state_file": sf})
+    a = b.read()
+    assert a.get("name") == "A"
+    assert b.read() is a, "sin cambiar mtime debe devolver el cacheado"
+    time.sleep(0.02)
+    with open(sf, "w") as fh:
+        _json.dump({"connected": True, "name": "B"}, fh)
+    assert b.read().get("name") == "B", "al cambiar el fichero debe releer"
+    print("OK lua_bridge: cache de estado por mtime")
+
+
+def test_capture_counts_once_per_corpse() -> None:
+    """El contador 'ball' cuenta 1 por cuerpo (intento), no 1 por throw."""
+    bb = Blackboard()
+    st = make_state()
+    st.creatures = [Creature(cid=7, name="Shiny X", pos=Vec3(100, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, shiny=True)]
+    st.defeated = [{"id": "7", "name": "Shiny X", "x": 100, "y": 100, "z": 7}]
+    bb.update_corpses(st)
+    bb.notes.setdefault("looted_ids", set()).add("7")
+    st.creatures = []
+    cap = CaptureBehavior({"enabled": True, "catch_all": True, "ball_item": 2652,
+                           "interval": 0.0, "max_throws": 5, "range": 4}, {})
+    assert cap.evaluate(st, bb) is True
+    inp = RecInput()
+    cap.act(st, bb, inp)
+    cap.act(st, bb, inp)   # varios throws al mismo cuerpo
+    assert bb.counters.get("ball") == 1, f"debe contar 1 por cuerpo: {bb.counters}"
+    assert len(inp.ball_throws) >= 2, "si lanza varias balls"
+    print("OK capture: cuenta 1 por cuerpo (no por throw)")
+
+
 def test_crisis_disabled() -> None:
     bb = Blackboard()
     st = make_state()
@@ -700,20 +975,31 @@ def main() -> int:
     test_revive_rec_not_cancelled()
     test_revive_first_flag()
     test_summon_picks_free_tile()
+    test_summon_never_on_player()
     test_revive_waits_after_aoe()
     test_lure_summon_orders()
     test_capture_uses_lua_ball()
+    test_capture_range()
+    test_capture_counts_once_per_corpse()
     test_buff_on_screen()
     test_buff_respects_gate()
     test_lure_combo_custom()
-    test_lure_group_threshold()
+    test_lure_idle_to_hold()
+    test_lure_hold_requires_all_in_range()
+    test_lure_fight_returns_to_hold()
+    test_lure_gather_timeout()
+    test_aoe_cooldown_spacing()
+    test_luabridge_state_cache()
+    test_lure_summon_arrival_grace()
     test_route_calls_pokemon()
+    test_route_start_idle_toggle()
     test_revive_uses_route_slot()
     test_revive_urgent_when_dead()
     test_loot_yields_when_revive_urgent()
     test_revive_only_when_in_range_cleared()
     test_revive_stun_bypass()
     test_revive_exhausted_fallback()
+    test_revive_no_double_after_lag()
     test_gate_ignores_far_enemy()
     test_gate_strict_requires_all_in_range()
     test_aoe_cast_order_respects_combo()

@@ -169,6 +169,11 @@ function renderState(s) {
   document.getElementById("walking").textContent = s.is_walking ? "sí" : "no";
   document.getElementById("nav").textContent = s.nav || "—";
   document.getElementById("lastcmd").textContent = s.last_cmd || "—";
+  const cnt = s.counters || {};
+  const CL = [["kill", "kills"], ["loot", "loots"], ["looted", "looted"], ["ball", "intentos"],
+              ["captured", "capturas"], ["revive", "revives"], ["skill", "skills"],
+              ["pokestop", "pokestops"], ["lure", "lures"]];
+  document.getElementById("counters").textContent = CL.map(([k, l]) => `${l}: ${cnt[k] || 0}`).join("   ");
   document.getElementById("btn-start").disabled = !!s.running;
   document.getElementById("btn-stop").disabled = !s.running;
   document.getElementById("btn-pause").textContent = s.paused ? "Reanudar" : "Pausar";
@@ -192,8 +197,8 @@ function renderState(s) {
   const combat = (s.control && s.control.combat) || {};
   const aoemin = document.getElementById("aoemin");
   if (document.activeElement !== aoemin && combat.lure_visible_min != null) aoemin.value = combat.lure_visible_min;
-  const grpmin = document.getElementById("grpmin");
-  if (document.activeElement !== grpmin && combat.lure_enter_min != null) grpmin.value = combat.lure_enter_min;
+  const lureto = document.getElementById("lureto");
+  if (document.activeElement !== lureto && combat.lure_gather_timeout != null) lureto.value = combat.lure_gather_timeout;
   const inrmin = document.getElementById("inrmin");
   if (document.activeElement !== inrmin && combat.cast_min_in_range != null) inrmin.value = combat.cast_min_in_range;
   const atkrange = document.getElementById("atkrange");
@@ -204,8 +209,18 @@ function renderState(s) {
   if (document.activeElement !== panic && combat.panic_hp != null) panic.value = combat.panic_hp;
   const readypct = document.getElementById("readypct");
   if (document.activeElement !== readypct && combat.ready_pct != null) readypct.value = combat.ready_pct;
+  const skillcd = document.getElementById("skillcd");
+  if (document.activeElement !== skillcd && combat.cooldown != null) skillcd.value = combat.cooldown;
   const reqall = document.getElementById("reqall");
   if (document.activeElement !== reqall && combat.require_all_close != null) reqall.checked = !!combat.require_all_close;
+  const routeBeh = (s.control && s.control.route_behavior) || {};
+  const idleEn = document.getElementById("idleen");
+  if (document.activeElement !== idleEn && routeBeh.start_idle_enabled != null) idleEn.checked = !!routeBeh.start_idle_enabled;
+  const idleSecs = document.getElementById("idlesecs");
+  if (document.activeElement !== idleSecs && routeBeh.start_idle_seconds != null) {
+    const v = routeBeh.start_idle_seconds;
+    idleSecs.value = Array.isArray(v) ? Math.round((Number(v[0]) + Number(v[v.length - 1])) / 2) : v;
+  }
 
   updatePartySelect(s.party || [], s.active_pokemon || "");
 
@@ -690,9 +705,9 @@ function wire() {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { lure_visible_min: n } });
   };
-  document.getElementById("grpmin").onchange = (e) => {
+  document.getElementById("lureto").onchange = (e) => {
     const n = parseInt(e.target.value, 10);
-    if (n >= 1) api("/api/control", "POST", { combat: { lure_enter_min: n } });
+    if (n >= 0) api("/api/control", "POST", { combat: { lure_gather_timeout: n } });
   };
   document.getElementById("inrmin").onchange = (e) => {
     const n = parseInt(e.target.value, 10);
@@ -714,8 +729,18 @@ function wire() {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { ready_pct: n } });
   };
+  document.getElementById("skillcd").onchange = (e) => {
+    const n = parseFloat(e.target.value);
+    if (!isNaN(n) && n >= 0) api("/api/control", "POST", { combat: { cooldown: n } });
+  };
   document.getElementById("reqall").onchange = (e) =>
     api("/api/control", "POST", { combat: { require_all_close: e.target.checked } });
+  document.getElementById("idleen").onchange = (e) =>
+    api("/api/control", "POST", { route_behavior: { start_idle_enabled: e.target.checked } });
+  document.getElementById("idlesecs").onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 0) api("/api/control", "POST", { route_behavior: { start_idle_seconds: n } });
+  };
   document.getElementById("btn-log-clear").onclick = (e) => {
     logAutoScroll = !logAutoScroll;
     e.target.textContent = logAutoScroll ? "auto-scroll" : "scroll off";

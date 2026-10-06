@@ -1272,7 +1272,9 @@ local function snapshot()
         end
         local pid = nil
         pcall(function() pid = tostring(w.pokeId) end)
-        st.party[#st.party + 1] = { slot = i, id = id, pokeId = pid, name = pname, hp = pct }
+        local isActive = false
+        pcall(function() isActive = (w:isActive() == true) end)
+        st.party[#st.party + 1] = { slot = i, id = id, pokeId = pid, name = pname, active = isActive, hp = pct }
         local slotw = w:getChildById("pokemonSlot")
         if slotw then
           local okr, r = pcall(function() return slotw:getRect() end)

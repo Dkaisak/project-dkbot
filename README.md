@@ -82,7 +82,9 @@ comandos se drena de forma **atómica** (`rename` + lectura) para no perder
 5. El humano (humanizer) puede meter micro-pausas aleatorias entre acciones.
 6. Se escribe `status_file` (estado del bot) y se duerme `tick_seconds`.
 
-El tick por defecto es **0.05 s**.
+El tick por defecto es **0.05 s**. La lectura del `state_file` se **cachea por
+`mtime`**: el agente lo reescribe cada ~200 ms, así que el bot no reparsea el
+JSON en los ticks intermedios.
 
 ### Fuentes de estado (`settings.state_source`)
 
@@ -140,26 +142,41 @@ salta.
 
 ### 5.1 Combate (`CombatBehavior`)
 
-- **Lure con Pokestop + AoE** (`lure_aoe`): camina la ruta hasta juntar
-  `lure_visible_min` enemigos que cuentan → **pokestop** (los deja quietos) →
-  fase **`wait`** (espera a que se acerquen) → **`fight`** (lanza AoE) →
-  `resume`.
-- **Lure ligero** (`lure_enter_min`, `lure_light_wait`): si hay al menos
-  `lure_enter_min` enemigos (por defecto 2, un grupito) pero menos de
-  `lure_visible_min`, hace pokestop+summon igual y pelea en cuanto tiene rango,
-  con una espera corta (`lure_light_wait`) en vez de juntar masa. Por debajo de
-  `lure_enter_min` (enemigos sueltos) sigue la ruta: no caza de uno en uno.
-- **Buff en el lure**: en la fase `wait` lanza **una vez** la skill de buff
-  (efecto con componente `buff`, p. ej. `buff/nevermiss`) para tenerla activa al
-  pelear.
-- **Summon en el lure** (`lure_summon`): en `wait`, **antes de pelear**, ordena
-  el ownsummon cerca del player (con vecinos libres) para que los cuerpos caigan
-  cerca. Ver §5.6.
+- **Lure con Pokestop + AoE** (`lure_aoe`): máquina `idle → hold → fight →
+  resume`.
+  - **idle**: camina la ruta hasta juntar **`lure_visible_min` (X) enemigos
+    visibles** en pantalla, con **tope de tiempo `lure_gather_timeout`** (10 s):
+    el contador arranca al aparecer el **primer enemigo** (`vis ≥ 1`) y se
+    **resetea** al quedarte sin enemigos. Si vence el tope sin llegar a X, pasa a
+    `hold` igualmente (con lo que haya); el gate estricto sigue decidiendo el
+    casteo. `lure_gather_timeout=0` = sin tope. Configurable en la GUI ("Lure tope").
+  - **hold**: para la navegación y ordena el ownsummon (`lure_summon`). **No
+    ataca.** Pasa a `fight` cuando el ownsummon **llegó** al tile del `order`
+    (a ≤ `summon_arrive_tolerance` tiles, o tras `summon_grace_secs` si no llega
+    exacto) **y todos los de pantalla están a `attack_range` (R)**; entonces
+    lanza **pokestop** (para fijarlos) y pelea. Si vence `hold_timeout` sin
+    lograrlo → `resume` (abandona y sigue la ruta; **no ataca**).
+  - **fight**: castea el combo con el gate estricto. Si el gate deja de
+    cumplirse más de `fight_recover_secs` → vuelve a `hold` a reagrupar. Sin
+    enemigos → `resume`.
+  - **resume**: clic central, limpia estado, pausa `resume_pause_secs` → `idle`.
+  - Única excepción al gate: **`panic_hp`** (vida baja del Pokémon).
+- **Buff en el lure**: lanza **una vez** la skill de buff (efecto con componente
+  `buff`, p. ej. `buff/nevermiss`), pero respetando el gate (no sale hasta que
+  todos estén a rango, salvo `panic_hp`).
+- **Summon en el lure** (`lure_summon`): en `hold` ordena el ownsummon a un tile
+  con sus 8 vecinos libres (`lure_summon_radius`); el pokestop espera a que
+  llegue. Ver §5.6.
 - **Fight-mode** (`manage_fight_mode`): fuera del burst pone **Defensivo** (3) y
   al lanzar skills **Ofensivo** (1), con un pequeño delay (`fight_mode_delay`)
   antes del primer AoE para que el servidor aplique el modo.
 - **Pokestop**: se dispara con `game_pokemon.pokeStop()` (config
   `pokestop_method`: `func` / `talk` / `hotkey`). Ver §9.
+- **Ritmo de casteo** (`cooldown`, por defecto **0.3 s**): intervalo mínimo entre
+  lanzamientos de skills. Antes estaba en `0.0` y el bot lanzaba una skill **cada
+  tick** (0.05 s), más rápido de lo que el cliente procesa → se perdían skills.
+  La GUI lo expone como **"Skill cada"**. `skill_repeat_guard` evita repetir la
+  misma skill mientras el cliente no refleja su cooldown.
 - **Orden de skills**: respeta el combo por Pokémon que editas en la GUI
   (`state.skill_order`), tanto en AoE como en skills de daño. Si no hay orden,
   usa shuffle humano / round-robin. Por defecto el lure pega **solo en área**
@@ -169,6 +186,10 @@ salta.
   para un Pokémon, el lure usa **exactamente esas skills, en ese orden**, en cada
   fase de pelea (antes del revive) e ignora `lure_use_single`. Sin combo propio,
   aplica la lógica anterior (AoE por defecto).
+- **Sin target**: **no se fija objetivo en ningún combate** (no se usa
+  `attackat`); las skills se lanzan directas (`spell <key>`). Aplica al burst AoE
+  y también al combate dirigido (Pokémon sin AoE). El único clic sobre criaturas
+  que queda es el de loot/captura (derecho), que no es targeting de combate.
 - **Gate de ataque**: **por defecto no lanza hasta que TODOS los enemigos en
   pantalla estén a ≤ `attack_range` del pokémon propio** (`require_all_close=true`;
   nunca se usa el player como referencia). La **única excepción es `panic_hp`**:
@@ -216,6 +237,11 @@ Condiciones para revivir (resetear cooldowns / revivir):
 | **D** | `in_range > 0`, sin stun, con skills listas | — | **no revive** (sigue casteando) |
 
 Extras:
+- **Sin doble revive (guarda de recuperación)**: tras completar una secuencia, no
+  arranca otra hasta que el estado del juego confirme que surtió efecto
+  (`revive_ready`: Pokémon **vivo** y **combo sin cooldowns**). Evita el doble
+  revive por el retraso del snapshot del agente. Si nunca se recupera, reintenta
+  tras `revive_retry_secs`.
 - **Slot**: usa el slot del **Pokémon elegido para la ruta** (selector en la
   tarjeta *Equipo*); si no hay selección, cae a `revive.slot` de config. Así el
   revive siempre va al Pokémon que está trabajando en la ruta.
@@ -245,11 +271,18 @@ sin cursor) → sacar (call slot)**. El **primer** revive de la sesión espera
 ### 5.4 Ruta (`RouteBehavior`)
 
 - Sigue los waypoints dibujados de forma **determinista** (sin micro-desvíos;
-  `route.detour=false`). Idle de arranque determinista.
-- **Pokémon de la ruta**: si en la GUI marcas un Pokémon para la ruta, el bot lo
-  **saca activo** (`callslot`) al iniciarla (una vez por cambio de ruta); desde
-  ahí todo (lure, revive, combos) trabaja con él. Si no hay nombre, usa el slot
-  guardado. La selección se guarda por ruta (control y rutas con nombre).
+  `route.detour=false`).
+- **Idle de inicio** (`start_idle_enabled`, `start_idle_seconds`): al volver al
+  **waypoint 0** (después del primer loop) espera `start_idle_seconds` (por
+  defecto `[25,60]`; con `start_idle_random=false` usa la media). Se puede
+  **activar/desactivar** y ajustar el tiempo desde la GUI (tarjeta *Exploración*,
+  control "Idle inicio"); se aplica en caliente.
+- **Pokémon de la ruta**: si en la GUI marcas un Pokémon para la ruta, al
+  iniciarla el bot comprueba si **ese slot ya está out** (el agente lo marca con
+  `isPokemonActive(pokeId)`); si ya está out **lo deja como está** (no hace
+  click), y si no, lo saca con `callslot`. Desde ahí todo (lure, revive, combos)
+  trabaja con él. Si no hay nombre, usa el slot guardado. La selección se guarda
+  por ruta (control y rutas con nombre).
 - **Densificada** (`route.densify`): al cargar la ruta, cada tramo se sustituye
   por el **camino real sobre el otmm** (astar), para que siga el corredor.
 - **Segmentación por camino real**: el objetivo de navegación se calcula con
@@ -267,7 +300,8 @@ sin cursor) → sacar (call slot)**. El **primer** revive de la sesión espera
 
 - Mantiene el **ownsummon** cerca del player: elige el tile más cercano al
   player cuyos **8 vecinos estén libres** (caminables en el otmm, sin criaturas)
-  y lo ordena con **`order`**.
+  y lo ordena con **`order`**. El tile está **siempre a ≥ 2 tiles del personaje**
+  (nunca encima ni a 1); `summon_near_tile` arranca el radio en 2.
 - `evaluate` actúa si el pokémon está lejos del player (`max_dist`) o sus
   vecinos no están libres, con un `interval_secs` mínimo.
 - El **lure** también lo usa antes de pelear (`combat.lure_summon`, ver §5.1).
@@ -361,6 +395,8 @@ Así se evitan "cuerpos falsos" (criaturas que se alejan de la vista).
   - **No cuenta el summon propio** (`is_summon`) ni duplica por tick (dedupe por
     instancia), para no invertir la tabla.
 - `capture` lanza la ball a los cuerpos shiny o a todos si `capture.catch_all`.
+  `capture.range` (4): lanza desde **≤ 4 tiles**; si el cuerpo está más lejos, se
+  acerca primero (antes estaba en 1, ahora puede lanzar desde 4).
 - La ball se lanza **por Lua**: `ball <itemId> x y z` obtiene el `Thing` del
   tile con `getCreatureOrMapThingByMousePosition` (sin mover el cursor) y aplica
   `useInventoryItemWith(itemId, thing)`. El ítem (p. ej. **2652**) es
@@ -392,8 +428,8 @@ Endpoints:
 
 Tarjetas principales: estado, control (start/stop/pausa/panic), toggles de
 behaviors (crisis/combat/loot/revive/explore; **sin curación**), ajustes de
-combate (lure min, grupito min, en rango, rango ataque, rango engage, HP pánico,
-skill lista %, solo todos a rango), **Equipo**
+combate (lure min, en rango, rango ataque, rango engage, HP pánico,
+skill lista %, solo todos a rango, idle inicio), **Equipo**
 (slots con HP y activo, y selector del Pokémon de la ruta, que se saca al
 iniciarla), mapa real (base otmm, pan/zoom, transitabilidad), editor de ruta,
 **Skills / combo del lure** (orden por Pokémon + skills marcadas para cada lure,
@@ -401,7 +437,9 @@ y **✕** para borrar del catálogo; el Pokémon activo se resalta y no se puede
 borrar) e **Ignorar criaturas**. El panel lee la `party` del estado **en tiempo real** (slots con HP y
 flag de activo) para el selector de Pokémon. El cliente no expone el nombre por
 slot: se muestra "Slot N" y el panel **aprende** el nombre cuando ese Pokémon
-está activo (se guarda en el navegador).
+está activo (se guarda en el navegador). La tarjeta *Estado* muestra además
+**contadores** de la sesión (kills, loots, looted, balls, capturas, revives,
+skills, pokestops, lures), tomados del `status_file`.
 
 ---
 

@@ -28,13 +28,25 @@ class LuaBridge:
         self.ignore_file = cfg.get("ignore_file", "")
         self.direction_map = {int(k): int(v) for k, v in cfg.get("direction_map", DEFAULT_DIRECTION_MAP).items()}
         self._last_mtime = 0.0
+        self._cached: Optional[dict] = None
 
     def read(self) -> dict:
+        # cache por mtime: el agente reescribe el estado cada ~200 ms, pero el bot
+        # lo lee cada tick (~50 ms). Evita abrir+parsear el JSON 4 veces de mas.
+        try:
+            mtime = os.path.getmtime(self.state_file)
+        except OSError:
+            return {}
+        if mtime == self._last_mtime and self._cached is not None:
+            return self._cached
         try:
             with open(self.state_file, "r", encoding="utf-8") as handle:
-                return json.load(handle)
+                data = json.load(handle)
         except (OSError, ValueError):
             return {}
+        self._last_mtime = mtime
+        self._cached = data
+        return data
 
     def send(self, line: str) -> None:
         if not self.cmd_file:
@@ -183,7 +195,8 @@ class LuaStateSource:
         state.party = [
             Pokemon(slot=int(p.get("slot", 0)),
                     name=str(p.get("name") or p.get("id") or ""),
-                    hp_pct=int(p.get("hp", 0)), alive=int(p.get("hp", 0)) > 0)
+                    hp_pct=int(p.get("hp", 0)), alive=int(p.get("hp", 0)) > 0,
+                    active=bool(p.get("active")))
             for p in (data.get("party", []) or [])
         ]
         if self.pokemon_skills is not None:
