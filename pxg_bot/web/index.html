@@ -20,6 +20,7 @@
       <span class="chip" id="pid">detenido</span>
     </div>
     <div class="actions">
+      <button id="btn-attach" class="mini">Atachar cliente</button>
       <button id="btn-start" class="primary">Iniciar</button>
       <button id="btn-stop" class="danger">Detener</button>
       <button id="btn-pause">Pausar</button>
@@ -64,6 +65,29 @@
         <span class="muted small">derrotados</span></div>
       <div class="row"><label>Lure min</label><input type="number" id="aoemin" class="mini" min="1" max="20" value="5" style="width:64px" />
         <span class="muted small">visibles para lurear</span></div>
+      <div class="row"><label>Grupito min</label><input type="number" id="grpmin" class="mini" min="1" max="20" value="2" style="width:64px" />
+        <span class="muted small">enemigos para parar y pegar</span></div>
+      <div class="row"><label>En rango</label><input type="number" id="inrmin" class="mini" min="1" max="20" value="2" style="width:64px" />
+        <span class="muted small">a rango para castear</span></div>
+      <div class="row"><label>Rango ataque</label><input type="number" id="atkrange" class="mini" min="1" max="12" value="3" style="width:64px" />
+        <span class="muted small">tiles del summon para pegar</span></div>
+      <div class="row"><label>Rango engage</label><input type="number" id="engrange" class="mini" min="0" max="30" value="0" style="width:64px" />
+        <span class="muted small">radio de enemigos que cuentan (0 = toda la pantalla)</span></div>
+      <div class="row"><label>HP pánico</label><input type="number" id="panic" class="mini" min="1" max="100" value="25" style="width:64px" />
+        <span class="muted small">% HP del poke para lanzar todas las skills</span></div>
+      <div class="row"><label>Skill lista %</label><input type="number" id="readypct" class="mini" min="1" max="100" value="100" style="width:64px" />
+        <span class="muted small">cooldown para considerar la skill lista</span></div>
+      <div class="row"><label>Solo todos a rango</label><input type="checkbox" id="reqall" checked />
+        <span class="muted small">no lanzar hasta que TODOS los de pantalla estén a rango (salvo HP pánico)</span></div>
+    </section>
+
+    <section class="card">
+      <h3>Equipo</h3>
+      <div class="row"><label>Ruta</label>
+        <select id="route-pokemon" class="mini"><option value="">(ninguno)</option></select>
+        <span class="muted small" id="route-pokemon-info">se saca al iniciar la ruta</span>
+      </div>
+      <div id="party" class="party"></div>
     </section>
 
     <section class="card span2">
@@ -94,7 +118,8 @@
     </section>
 
     <section class="card span2">
-      <h3>Skills <button id="psk-refresh" class="mini ghost right">refrescar Pokémon</button></h3>
+      <h3>Skills / combo del lure <button id="psk-refresh" class="mini ghost right">refrescar Pokémon</button></h3>
+      <div class="muted small">Marca con ✔ las skills que se usarán en cada lure (en el orden de la lista) y pulsa <b>Guardar combo lure</b>. Sin ninguna marcada, el lure usa su lógica por defecto.</div>
       <div id="psk" class="psk"></div>
       <div id="psk-info" class="muted small"></div>
     </section>

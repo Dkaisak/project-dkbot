@@ -156,6 +156,15 @@ class BaseInput:
     def revive(self, slot: int, item_id: int = 2269) -> None:
         pass
 
+    def ball(self, item_id: int, target: Vec3) -> None:
+        pass
+
+    def order(self, target: Vec3) -> None:
+        pass
+
+    def set_fight_mode(self, mode: int) -> None:
+        pass
+
     def stand_near(self, target: Vec3) -> None:
         pass
 

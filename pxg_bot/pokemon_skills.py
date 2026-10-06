@@ -15,6 +15,7 @@ class PokemonSkills:
         self.path = path
         self.data: dict[str, dict] = {}
         self.order: dict[str, list] = {}
+        self.lure_order: dict[str, list] = {}
         self._dirty = False
         self._order_mtime = 0.0
         self.load()
@@ -27,6 +28,7 @@ class PokemonSkills:
                 d = json.load(handle)
             self.data = d.get("pokemon", {}) if isinstance(d, dict) else {}
             self.order = d.get("order", {}) if isinstance(d, dict) else {}
+            self.lure_order = d.get("lure_order", {}) if isinstance(d, dict) else {}
             self._order_mtime = os.path.getmtime(self.path)
         except (OSError, ValueError):
             pass
@@ -40,7 +42,9 @@ class PokemonSkills:
             self._reload_order()
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump({"pokemon": self.data, "order": self.order}, handle, indent=2, ensure_ascii=False)
+                json.dump({"pokemon": self.data, "order": self.order,
+                           "lure_order": self.lure_order},
+                          handle, indent=2, ensure_ascii=False)
             os.replace(tmp, self.path)
             self._order_mtime = os.path.getmtime(self.path)
             self._dirty = False
@@ -61,6 +65,7 @@ class PokemonSkills:
                 d = json.load(handle)
             if isinstance(d, dict):
                 self.order = d.get("order", {}) or {}
+                self.lure_order = d.get("lure_order", {}) or {}
             self._order_mtime = mtime
         except (OSError, ValueError):
             pass
@@ -90,6 +95,12 @@ class PokemonSkills:
         """Orden (combo) configurado para un Pokemon; recarga si la GUI lo cambio."""
         self._reload_order()
         return list(self.order.get(name, []))
+
+    def lure_order_for(self, name: str) -> list:
+        """Combo propio del lure (skills y orden) para un Pokemon. Vacio = sin
+        combo propio (el lure usa la logica por defecto)."""
+        self._reload_order()
+        return list(self.lure_order.get(name, []))
 
     def aoe_keys(self, name: str) -> list:
         skills = self.data.get(name, {})

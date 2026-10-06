@@ -81,6 +81,39 @@ def is_enemy(c: Creature) -> bool:
     return c.attackable and not c.is_player
 
 
+def summon_near_tile(state: GameState, otmm, radius: int = 4):
+    """Devuelve el tile mas cercano al player cuyos 8 vecinos esten libres
+    (caminables en el otmm) y que no este ocupado por criaturas. None si no hay."""
+    if otmm is None or not getattr(otmm, "ready", False):
+        return None
+    p = state.player.pos
+    occupied = {(c.pos.x, c.pos.y) for c in state.creatures
+                if c.pos.z == p.z and not c.is_self}
+
+    def free(x: int, y: int) -> bool:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                if not otmm.pathable(x + dx, y + dy, p.z):
+                    return False
+        return True
+
+    for r in range(1, radius + 1):
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                if max(abs(dx), abs(dy)) != r:
+                    continue
+                x, y = p.x + dx, p.y + dy
+                if (x, y) in occupied:
+                    continue
+                if not otmm.pathable(x, y, p.z):
+                    continue
+                if free(x, y):
+                    return Vec3(x, y, p.z)
+    return None
+
+
 class Behavior:
     name = "behavior"
     priority = 0
@@ -102,6 +135,10 @@ class CrisisBehavior(Behavior):
 
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
         s = self.cfg
+        if not s.get("enabled", True):
+            # el toggle "crisis" desactiva absolutamente todo (desconexion,
+            # jugador/GM, HP critica, huida y logout)
+            return False
         if not state.connected:
             bb.stop_reason = "cliente desconectado"
             return True
@@ -202,6 +239,9 @@ class CaptureBehavior(Behavior):
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
         if bb.paused:
             return False
+        # una secuencia de revive en curso es atomica: captura cede
+        if bb.notes.get("revive_rec") or bb.notes.get("revive_urgent") or bb.notes.get("revive_fast"):
+            return False
         self._promote(bb)
         pending = self._pending(bb)
         pending[:] = [t for t in pending if self._valid(t)]
@@ -217,21 +257,24 @@ class CaptureBehavior(Behavior):
         pending = self._pending(bb)
         if not pending:
             return
+        # capturado (mensaje del servidor): el cuerpo se va
         if getattr(state, "captured", False):
             pending.pop(0)
             return
         t = pending[0]
         pos = Vec3(int(t["x"]), int(t["y"]), int(t["z"]))
+        # acercarse al cuerpo antes de lanzar
         if state.player.pos.distance(pos) > int(self.cfg.get("range", 1)):
             if bb.ready("cap_goto", 0.35):
                 inp.walk_to(pos)
                 bb.mark("cap_goto")
             return
+        # lanzar la ball: Lua aplica el item al Thing del tile (sin mover el cursor)
         if bb.ready("ball", float(self.cfg.get("interval", 1.0))):
-            inp.hotkey(self.cfg.get("ball_key", "F4"))
+            inp.ball(int(self.cfg.get("ball_item", 2652)), pos)
             bb.mark("ball")
             t["n"] = int(t.get("n", 0)) + 1
-            if t["n"] >= int(self.cfg.get("max_throws", 10)):
+            if t["n"] >= int(self.cfg.get("max_throws", 5)):
                 pending.pop(0)
 
 
@@ -248,6 +291,10 @@ class CombatBehavior(Behavior):
             return False
         if bb.notes.get("spawn_backoff"):
             return True
+        # el buff se dispara con >= N enemigos en pantalla, aunque no haya lure
+        # (si no, con pocos enemigos combate no actua y el buff no sale)
+        if self._buff_wanted(state, bb):
+            return True
         if self._spawn_blocked(state, bb):
             tgt = bb.notes.get("last_target")
             if tgt:
@@ -257,10 +304,12 @@ class CombatBehavior(Behavior):
         # esperar a que se acerquen y lanzar AoE; luego reanudar con clic central.
         if self.cfg.get("lure_aoe", False) and self._has_aoe(state):
             lstate = bb.notes.get("lure_state")
-            vis = self._visible_enemies(state)
+            # "engaging" = visibles dentro de engage_radius del summon: un enemigo
+            # del borde de la pantalla no cuenta para entrar ni para bloquear.
+            vis = self._engaging_enemies(state)
             vmin = int(self.cfg.get("lure_visible_min", 5))
-            arange = int(self.cfg.get("lure_attack_range", 2))
-            amin = int(self.cfg.get("lure_attack_min", 2))
+            lmin = int(self.cfg.get("lure_enter_min", 2))
+            arange = int(self.cfg.get("lure_attack_range", 3))
             if lstate == "fight":
                 if not any(is_enemy(c) for c in state.creatures):
                     bb.notes["lure_state"] = "resume"
@@ -271,14 +320,18 @@ class CombatBehavior(Behavior):
                     bb.notes["lure_state"] = "fight"
                     bb.notes["lure_panic"] = True
                     return True
-                if len(vis) < vmin:
+                # lure ligero: basta con lmin enemigos; completo: vmin
+                need_min = lmin if bb.notes.get("lure_light") else vmin
+                if len(vis) < need_min:
                     bb.notes["lure_state"] = "resume"
                     return True
                 lnow = time.time()
-                ref = self._ref_pos(state)
-                close = [c for c in vis if ref.distance(c.pos) <= arange]
-                all_close = len(vis) > 0 and len(close) == len(vis)
-                if all_close or (lnow - bb.notes.get("lure_start", lnow)) > float(self.cfg.get("lure_wait_timeout", 20)):
+                # el lure ligero espera poco (no tiene sentido juntar masa);
+                # el completo espera a lure_wait_timeout o a tener rango
+                timeout = (float(self.cfg.get("lure_light_wait", 1.5))
+                           if bb.notes.get("lure_light")
+                           else float(self.cfg.get("lure_wait_timeout", 20)))
+                if self._enough_in_range(state, arange) or (lnow - bb.notes.get("lure_start", lnow)) > timeout:
                     bb.notes["lure_state"] = "fight"
                 return True
             if lstate == "resume":
@@ -289,11 +342,19 @@ class CombatBehavior(Behavior):
                 bb.notes["lure_state"] = "fight"
                 bb.notes["lure_panic"] = True
                 return True
-            # fase A: si hay >= vmin visibles -> pokestop y esperar
+            # fase A: >= vmin -> lure completo; >= lmin -> lure ligero (pokestop
+            # igual, pero pelea en cuanto haya rango sin esperar a juntar masa)
             if len(vis) >= vmin:
                 bb.notes["lure_state"] = "wait"
                 bb.notes["lure_start"] = time.time()
                 bb.notes["lure_pokestop"] = True
+                bb.notes.pop("lure_light", None)
+                return True
+            if len(vis) >= lmin:
+                bb.notes["lure_state"] = "wait"
+                bb.notes["lure_start"] = time.time()
+                bb.notes["lure_pokestop"] = True
+                bb.notes["lure_light"] = True
                 return True
             return False  # seguir la ruta (lureando)
         blacklist = bb.notes.setdefault("target_blacklist", {})
@@ -411,7 +472,7 @@ class CombatBehavior(Behavior):
                 bb.notes["backoff_key"] = None
             return
         else:  # return
-            engage = int(self.cfg.get("attack_range", 1)) + 1
+            engage = int(self.cfg.get("attack_range", 3)) + 1
             if dist <= engage or now > bo["until"]:
                 bb.notes.pop("spawn_backoff", None)
                 bb.notes["spawn_backoff_end"] = now
@@ -431,26 +492,67 @@ class CombatBehavior(Behavior):
         return [c for c in state.creatures
                 if is_enemy(c) and abs(c.pos.x - px) <= hw and abs(c.pos.y - py) <= hh]
 
-    def _ref_pos(self, state: GameState) -> Vec3:
-        # referencia para medir distancias: el pokemon propio si se conoce,
-        # si no el jugador.
+    def _ref_pos(self, state: GameState) -> Optional[Vec3]:
+        # referencia para medir distancias: SIEMPRE el pokemon propio (ownsummon).
+        # Nunca el jugador. Si no se conoce el summon, se devuelve None y no se
+        # ataca (mejor no pelear que pelear con la distancia equivocada).
         pp = getattr(state, "pokemon_pos", None)
         if pp:
             return Vec3(int(pp[0]), int(pp[1]), int(pp[2]))
-        return state.player.pos
+        return None
+
+    def _engaging_enemies(self, state: GameState) -> list:
+        """Enemigos que cuentan para el enfrentamiento. Por defecto es **toda la
+        pantalla visible** (`engage_radius <= 0`); si `engage_radius > 0`, ademas
+        se limitan a ese radio alrededor del summon. Si no se conoce el summon,
+        se devuelven los visibles."""
+        visible = self._visible_enemies(state)
+        ref = self._ref_pos(state)
+        if ref is None:
+            return visible
+        r = int(self.cfg.get("engage_radius", 0))
+        if r <= 0:
+            return visible
+        return [c for c in visible if ref.distance(c.pos) <= r]
+
+    def _enough_in_range(self, state: GameState, rng: int) -> bool:
+        """True si al menos `cast_min_in_range` enemigos que cuentan estan a
+        <= rng del summon (o todos los que cuentan, si hay menos que el minimo).
+        Sustituye al criterio estricto de 'todos cerca'."""
+        engaging = self._engaging_enemies(state)
+        if not engaging:
+            return False
+        ref = self._ref_pos(state)
+        if ref is None:
+            return False
+        need = min(int(self.cfg.get("cast_min_in_range", 2)), len(engaging))
+        in_attack = sum(1 for c in engaging if ref.distance(c.pos) <= rng)
+        return in_attack >= need
+
+    def _attack_gate_ok(self, state: GameState) -> bool:
+        """Gate de ataque comun (lure, dirigido y buff): en panic siempre se
+        puede; si require_all_close, TODOS los de pantalla a rango; si no, N."""
+        if self._panic(state):
+            return True
+        arange = int(self.cfg.get("attack_range", 3))
+        if self.cfg.get("require_all_close", False):
+            return self._all_enemies_close(state, arange)
+        return self._enough_in_range(state, arange)
 
     def _all_enemies_close(self, state: GameState, rng: int) -> bool:
-        """True solo si TODOS los enemigos visibles estan a <= rng del pokemon."""
+        """True solo si TODOS los enemigos visibles estan a <= rng del pokemon propio."""
         vis = self._visible_enemies(state)
         if not vis:
             return False
         ref = self._ref_pos(state)
+        if ref is None:
+            return False
         return all(ref.distance(c.pos) <= rng for c in vis)
 
     def _panic(self, state: GameState) -> bool:
         # vida baja de NUESTRO pokemon (ownsummon): lanzar todo sin esperar
         hp = getattr(state, "pokemon_hp", None)
-        return hp is not None and hp <= int(self.cfg.get("panic_hp", 20))
+        return hp is not None and hp <= int(self.cfg.get("panic_hp", 25))
 
     def _middle_click_empty(self, state: GameState, bb: Blackboard, inp) -> None:
         """Clic central en un tile vacio: indica al pokemon que puede moverse otra vez."""
@@ -468,6 +570,69 @@ class CombatBehavior(Behavior):
             return
         inp.middle_click(Vec3(px, py, pz))
 
+    def _note_skill(self, bb: Blackboard, state: GameState, key) -> None:
+        # registra la skill enviada; si es AoE, el momento (para el revive) y si
+        # tiene stun, la ventana en la que el enemigo queda aturdido.
+        bb.notes["skill_sent"] = key
+        for m in (state.moves or []):
+            if str(m.get("key")) == str(key):
+                if m.get("aoe"):
+                    bb.notes["last_aoe_at"] = time.time()
+                if "stun" in str(m.get("effect", "")).lower():
+                    bb.notes["last_stun_at"] = time.time()
+                break
+
+    def _buff_candidate(self, state: GameState):
+        threshold = float(self.cfg.get("ready_pct", 100))
+        for m in (state.moves or []):
+            parts = [p.strip() for p in str(m.get("effect", "")).lower().split("/")]
+            if "buff" in parts and isinstance(m.get("pct"), (int, float)) and m["pct"] >= threshold:
+                return m.get("key")
+        return None
+
+    def _buff_wanted(self, state: GameState, bb: Blackboard) -> bool:
+        # hay que lanzar el buff? (>= N enemigos EN PANTALLA, no por lure)
+        if not self.cfg.get("buff_on_screen", True):
+            return False
+        nmin = int(self.cfg.get("buff_visible_min", 3))
+        if len(self._visible_enemies(state)) < nmin:
+            bb.notes.pop("buff_done", None)   # se rearma al bajar del minimo
+            return False
+        if bb.notes.get("buff_done"):
+            return False
+        return self._buff_candidate(state) is not None
+
+    def _maybe_buff(self, state: GameState, bb: Blackboard, inp) -> bool:
+        if not self._buff_wanted(state, bb):
+            return False
+        key = self._buff_candidate(state)
+        if key is None:
+            return False
+        # el buff tambien respeta el gate (no lanzar hasta que todos a rango,
+        # salvo panic): si no, castea un cd aunque no esten todos a rango.
+        if not self._attack_gate_ok(state):
+            return False
+        if bb.ready("attack", float(self.cfg.get("cooldown", 0.3))):
+            inp.press(key)
+            self._note_skill(bb, state, key)
+            bb.notes["buff_done"] = True
+            bb.mark("attack")
+            return True
+        return False
+
+    def _lure_summon(self, state: GameState, bb: Blackboard, inp) -> None:
+        # antes de pelear: ordenar el ownsummon cerca del player (con los 8
+        # vecinos libres) para que los cuerpos caigan cerca y el loot no quede lejos.
+        if not self.cfg.get("lure_summon", True):
+            return
+        if bb.notes.get("lure_summon_done"):
+            return
+        otmm = getattr(self.world, "otmm", None) if self.world is not None else None
+        t = summon_near_tile(state, otmm, int(self.cfg.get("lure_summon_radius", 3)))
+        if t is not None:
+            inp.order(t)
+        bb.notes["lure_summon_done"] = True
+
     def _aoe_fight(self, state: GameState, bb: Blackboard, inp, enemies) -> None:
         """Fase de pelea tras el lure: lanza AoE (fallback a skills de dano). Sin moverse."""
         s = self.cfg
@@ -479,7 +644,6 @@ class CombatBehavior(Behavior):
         def is_ready(m):
             return isinstance(m.get("pct"), (int, float)) and m["pct"] >= threshold
 
-        aoe_moves = [m for m in state.moves if m.get("aoe") and is_ready(m)]
         order = [str(k) for k in (getattr(state, "skill_order", []) or [])]
         prio = [str(p).lower() for p in (self.cfg.get("aoe_priority", []) or [])]
 
@@ -493,27 +657,50 @@ class CombatBehavior(Behavior):
                     return len(order) + i
             return len(order) + len(prio)
 
-        aoe_moves.sort(key=rank)
-        aoe_ready = [m["key"] for m in aoe_moves]
-        dmg_ready = [m["key"] for m in state.moves
-                     if not m.get("aoe") and is_ready(m) and "damage" in str(m.get("effect", ""))]
         panic = self._panic(state)
-        if panic:
-            # vida baja de nuestro pokemon: lanzar TODAS las skills listas
-            pool = aoe_ready + dmg_ready
+        use_single = bool(s.get("lure_use_single", True))
+        lure_order = [str(k) for k in (getattr(state, "lure_order", []) or [])]
+        by_key = {str(m.get("key", "")): m for m in state.moves}
+        if lure_order and not panic:
+            # combo propio del lure (GUI): exactamente esas skills, en ese orden
+            pool = [k for k in lure_order if k in by_key and is_ready(by_key[k])]
         else:
-            pool = aoe_ready or dmg_ready
+            # pool de skills listas ORDENADO POR EL COMBO del pokemon (no por la
+            # barra): asi se respeta el orden configurado tambien con las de dano.
+            ready_moves = []
+            for m in state.moves:
+                if not is_ready(m):
+                    continue
+                effect = str(m.get("effect", ""))
+                if m.get("aoe"):
+                    ready_moves.append(m)
+                elif "damage" in effect and (use_single or panic):
+                    ready_moves.append(m)
+            ready_moves.sort(key=rank)
+            pool = [m["key"] for m in ready_moves]
         if not pool:
             return
-        # solo lanzar ataques cuando TODOS los enemigos visibles esten a
-        # <= attack_range (2) del pokemon; en panico se ataca igual.
-        arange = int(s.get("attack_range", 2))
-        if not panic and not self._all_enemies_close(state, arange):
+        # no re-lanzar la misma skill mientras el cliente aun no refleja su
+        # cooldown: si no, el bot repite la misma (no-op) y el burst se frena
+        # ~0.3-0.6 s por skill. Excluyendola, recorre las demas listas seguidas.
+        guard = float(s.get("skill_repeat_guard", 0.3))
+        pressed = bb.notes.setdefault("pressed_skills", {})
+        for k in [k for k, t0 in pressed.items() if now - t0 > guard]:
+            pressed.pop(k, None)
+        pool = [k for k in pool if k not in pressed]
+        if not pool:
             return
-        close = self._visible_enemies(state)
+        # gate de ataque (estricto por defecto: todos a rango; panic lo salta)
+        if not self._attack_gate_ok(state):
+            return
+        close = self._engaging_enemies(state)
+        if not close:
+            return
         # fijar objetivo (sin acercarse)
         if state.attacking_name == "":
             ref = self._ref_pos(state)
+            if ref is None:
+                return
             target = min(close, key=lambda c: ref.distance(c.pos))
             if now - bb.notes.get("tlast", 0.0) > float(s.get("retarget_interval", 0.25)):
                 inp.click_tile(target.pos, {"player": state.player})
@@ -522,12 +709,17 @@ class CombatBehavior(Behavior):
         if bb.ready("attack", float(s.get("cooldown", 0.3))):
             # en orden: primero la AoE prioritaria (Air Vortex), luego el resto
             inp.press(pool[0])
-            bb.notes["skill_sent"] = pool[0]
+            self._note_skill(bb, state, pool[0])
+            pressed[pool[0]] = now
             bb.mark("attack")
 
     def act(self, state: GameState, bb: Blackboard, inp) -> None:
         if bb.notes.get("spawn_backoff"):
             self._run_spawn_backoff(state, bb, inp)
+            return
+        self._manage_fight_mode(bb, inp)
+        # buff cuando hay >= N enemigos en pantalla (no depende del lure)
+        if self._maybe_buff(state, bb, inp):
             return
         lstate = bb.notes.get("lure_state")
         if lstate == "wait":
@@ -541,14 +733,21 @@ class CombatBehavior(Behavior):
                     inp.pokestop("func")
                 bb.notes["pokestop_n"] = int(bb.notes.get("pokestop_n", 0)) + 1
                 inp.stop()        # cancela la navegacion de la ruta
+            # ordenar el ownsummon cerca del player antes de pelear
+            self._lure_summon(state, bb, inp)
             return  # esperar sin atacar
         if lstate == "fight":
+            # esperar a que el servidor aplique el modo ofensivo antes del burst
+            if self._fight_mode_waiting(bb):
+                return
             enemies = [c for c in state.creatures if is_enemy(c)]
             self._aoe_fight(state, bb, inp, enemies)
             return
         if lstate == "resume":
             self._middle_click_empty(state, bb, inp)
             bb.notes.pop("lure_state", None)
+            bb.notes.pop("lure_summon_done", None)
+            bb.notes.pop("lure_light", None)
             return
         s = self.cfg
         name = bb.notes.get("tname")
@@ -571,7 +770,10 @@ class CombatBehavior(Behavior):
                 (name, target.pos.x, target.pos.y)
             ] = now + float(s.get("target_blacklist_secs", 10.0))
             return
-        if state.player.pos.distance(target.pos) > int(s.get("attack_range", 1)):
+        ref = self._ref_pos(state)
+        if ref is None:
+            return
+        if ref.distance(target.pos) > int(s.get("attack_range", 3)):
             direction = state.player.pos.direction_to(target.pos)
             if direction >= 0 and not state.is_walking and bb.ready("approach", float(s.get("approach_cooldown", 0.15))):
                 inp.move(direction)
@@ -615,8 +817,8 @@ class CombatBehavior(Behavior):
             return
 
         # 3) atacar (respetando el orden de skills configurado en la GUI).
-        # Solo cuando TODOS los enemigos visibles esten a <= attack_range.
-        if not self._all_enemies_close(state, int(s.get("attack_range", 2))):
+        # Gate de ataque (estricto por defecto: todos a rango; panic lo salta).
+        if not self._attack_gate_ok(state):
             return
         threshold = float(s.get("ready_pct", 100))
         if bb.ready("attack", float(s.get("cooldown", 0.3))):
@@ -638,14 +840,41 @@ class CombatBehavior(Behavior):
                     key = ready[index % len(ready)]
                     bb.notes["move_idx"] = index + 1
                 inp.press(key)
-                bb.notes["skill_sent"] = key
+                self._note_skill(bb, state, key)
                 bb.notes["attack_attempt"] = now
                 bb.mark("attack")
+
+    def _manage_fight_mode(self, bb: Blackboard, inp) -> None:
+        # Solo en el lure: Defensivo fuera del burst (para juntar enemigos y
+        # lurear), Ofensivo justo cuando va a lanzar skills.
+        if not self.cfg.get("lure_aoe", False) or not self.cfg.get("manage_fight_mode", True):
+            return
+        cast = int(self.cfg.get("cast_fight_mode", 1))
+        idle = int(self.cfg.get("idle_fight_mode", 3))
+        want = cast if bb.notes.get("lure_state") == "fight" else idle
+        if want == bb.notes.get("fight_mode_set"):
+            return
+        inp.set_fight_mode(want)
+        bb.notes["fight_mode_set"] = want
+        if want == cast:
+            bb.notes["fight_mode_at"] = time.time()
+
+    def _fight_mode_waiting(self, bb: Blackboard) -> bool:
+        # tras cambiar a Ofensivo, dar un momento a que el servidor lo aplique
+        if not self.cfg.get("manage_fight_mode", True):
+            return False
+        delay = float(self.cfg.get("fight_mode_delay", 0.3))
+        at = bb.notes.get("fight_mode_at", 0.0)
+        return delay > 0 and at and (time.time() - at) < delay
 
 
 class LootBehavior(Behavior):
     name = "loot"
     priority = 88
+
+    def __init__(self, cfg: dict, settings: dict, world=None):
+        super().__init__(cfg, settings)
+        self.world = world
 
     def _pending(self, bb: Blackboard) -> list:
         return bb.notes.setdefault("corpses_pending", [])
@@ -718,6 +947,9 @@ class LootBehavior(Behavior):
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
         if bb.paused or not self.cfg.get("enabled", True):
             return False
+        # una secuencia de revive en curso es atomica: loot cede para no estirarla
+        if bb.notes.get("revive_rec") or bb.notes.get("revive_urgent") or bb.notes.get("revive_fast"):
+            return False
         self._finalize(bb)
         pending = self._pending(bb)
         if not pending:
@@ -731,7 +963,7 @@ class LootBehavior(Behavior):
         if phase != 0.0:
             elapsed = time.time() - phase
             bb.notes["loot_phase_elapsed"] = elapsed
-            if elapsed > float(self.cfg.get("phase_secs", 5.0)):
+            if elapsed > float(self.cfg.get("phase_secs", 10.0)):
                 for c in pending:
                     self._mark_looted(bb, c["id"])
                 pending.clear()
@@ -747,13 +979,8 @@ class LootBehavior(Behavior):
             bb.notes["loot_phase_start"] = 0.0
             bb.notes["loot_phase_elapsed"] = 0.0
             return False
-        # un cuerpo adyacente se lootea ya (pulsacion instantanea), aunque haya
-        # enemigos: no conviene perder el botin que tenemos al lado.
-        adjacent = self._coverage(px, py, pending) >= 1
-        # para caminar hacia cuerpos lejanos, no adelantar al combate
-        if not adjacent and self._enemy_near(state):
-            return False
-        # arranca el timer al empezar a lootear (adyacente o caminando)
+        # arranca el timer al empezar a lootear (adyacente o caminando). Ahora se
+        # camina a los cuerpos lejanos SIEMPRE, haya o no enemigos.
         if bb.notes.get("loot_phase_start", 0.0) == 0.0:
             bb.notes["loot_phase_start"] = time.time()
             bb.notes["loot_phase_elapsed"] = 0.0
@@ -790,17 +1017,23 @@ class LootBehavior(Behavior):
                 bb.notes["collect_rec"] = {"t": time.time(), "ids": ids}
             return
 
-        # con enemigos cerca no caminamos hacia cuerpos lejanos
-        if enemy_near:
-            return
-
         bodies = [[c["x"], c["y"]] for c in pending]
         # enviar el destino una sola vez (el agente lo recorre solo); reenviar
         # solo si cambia el conjunto de cuerpos o como red de seguridad.
         fp = tuple(sorted((c["x"], c["y"]) for c in pending))
         since = time.time() - bb.notes.get("loot_nav_t", 0.0)
-        if fp != bb.notes.get("loot_nav_fp") or since > float(self.cfg.get("resend_secs", 2.5)):
-            if len(bodies) == 1:
+        if fp != bb.notes.get("loot_nav_fp") or since > float(self.cfg.get("resend_secs", 4.0)):
+            # navegar con el astar del bot (otmm) al mejor tile de cobertura
+            target = self._best_tile(pending, state.player.pos)
+            path = None
+            wm = self.world
+            otmm = getattr(wm, "otmm", None) if wm is not None else None
+            if wm is not None and otmm is not None and getattr(otmm, "ready", False) and target:
+                path = wm.plan_to(state.player.pos, target[0], target[1])
+            if path and len(path) > 1:
+                # camino real (otmm) -> navpath; el agente lo sigue con autoWalk
+                inp.walk_path(path[1:1 + 40], pz)
+            elif len(bodies) == 1:
                 inp.stand_near(Vec3(bodies[0][0], bodies[0][1], pz))
             else:
                 inp.stand_near_many(bodies, pz)
@@ -812,7 +1045,21 @@ class ReviveBehavior(Behavior):
     name = "revive"
     priority = 80
 
+    def __init__(self, cfg: dict, settings: dict, combat_cfg: Optional[dict] = None):
+        super().__init__(cfg, settings)
+        self._revives_done = 0
+        self.route_slot = None            # slot del Pokemon elegido para la ruta
+        self.combat = combat_cfg or {}    # cfg del combate (attack_range, ready_pct)
+
+    def set_route_slot(self, slot) -> None:
+        """Vincula el revive al slot del Pokemon elegido para la ruta: si hay
+        seleccion, se reviva ese slot; si no, cae a revive.slot de config."""
+        self.route_slot = int(slot) if slot not in (None, "", 0, "0") else None
+
+    # --- slot ---
     def _slot(self) -> int:
+        if self.route_slot:
+            return self.route_slot
         return int(self.cfg.get("slot", 3))
 
     def _slot_hp(self, state: GameState):
@@ -821,80 +1068,151 @@ class ReviveBehavior(Behavior):
                 return p.hp_pct
         return None
 
-    def _enemies_on_screen(self, state: GameState) -> bool:
-        vis = state.visible or {}
-        hw = int(vis.get("w", 21)) // 2
-        hh = int(vis.get("h", 11)) // 2
-        px, py = state.player.pos.x, state.player.pos.y
-        return any(is_enemy(c) and abs(c.pos.x - px) <= hw and abs(c.pos.y - py) <= hh
-                   for c in state.creatures)
+    # --- combate: rango, combo, stun ---
+    def _attack_range(self) -> int:
+        if self.cfg.get("use_attack_range", True):
+            return int(self.combat.get("attack_range", self.cfg.get("attack_range", 3)))
+        return int(self.cfg.get("attack_range", 3))
 
-    def _skills_used(self, state: GameState) -> bool:
-        # el bot ya uso al menos una skill AoE (esta en cooldown)
-        return any(isinstance(m.get("pct"), (int, float)) and m["pct"] < 100
-                   for m in (state.moves or []) if m.get("aoe"))
+    def _ready_pct(self) -> float:
+        return float(self.combat.get("ready_pct", 100))
 
-    def _stun_used(self, state: GameState) -> bool:
-        # se uso una skill de stun (esta en cooldown). Con esto se puede revivir
-        # aunque haya pokemones en pantalla.
+    def _ref(self, state: GameState) -> Vec3:
+        # referencia de distancia: el pokemon propio; si no se conoce, el player
+        pp = getattr(state, "pokemon_pos", None)
+        if pp:
+            return Vec3(int(pp[0]), int(pp[1]), int(pp[2]))
+        return state.player.pos
+
+    def _alive_in_range(self, state: GameState) -> int:
+        """Enemigos atacables vivos dentro del rango de ataque del summon."""
+        rng = self._attack_range()
+        ref = self._ref(state)
+        return sum(1 for c in state.creatures if is_enemy(c) and ref.distance(c.pos) <= rng)
+
+    def _combo_keys(self, state: GameState) -> list:
+        # combo efectivo: el del lure, si no el orden general, si no las AoE
+        combo = [str(k) for k in (getattr(state, "lure_order", []) or [])]
+        if not combo:
+            combo = [str(k) for k in (getattr(state, "skill_order", []) or [])]
+        if not combo:
+            combo = [str(m.get("key")) for m in (state.moves or []) if m.get("aoe")]
+        return combo
+
+    def _combo_status(self, state: GameState):
+        """(usado, agotado): alguna skill del combo en cooldown / ninguna lista."""
+        by_key = {str(m.get("key")): m for m in (state.moves or [])}
+        combo = [k for k in self._combo_keys(state) if k in by_key]
+        if not combo:
+            return False, False
+        ready_pct = self._ready_pct()
+        ready = [k for k in combo if isinstance(by_key[k].get("pct"), (int, float))
+                 and by_key[k]["pct"] >= ready_pct]
+        return (len(ready) < len(combo)), (len(ready) == 0)
+
+    def _stun_active(self, state: GameState, bb: Blackboard) -> bool:
+        # proxy del stun del enemigo: se lanzo una skill de stun hace < stun_secs
         if not self.cfg.get("on_stun", True):
             return False
-        for m in (state.moves or []):
-            if "stun" in str(m.get("effect", "")).lower():
-                pct = m.get("pct")
-                if isinstance(pct, (int, float)) and pct < 100:
-                    return True
-        return False
+        last = bb.notes.get("last_stun_at", 0.0)
+        return last > 0 and (time.time() - last) <= float(self.cfg.get("stun_secs", 2.5))
 
-    def _need(self, state: GameState) -> bool:
-        # 2) ya se uso alguna skill AoE, o
-        # 3) nuestro propio pokemon debilitado
+    def urgent(self, state: GameState, bb: Blackboard) -> bool:
+        """Revive de alta prioridad (debilitado / agotado / vivos stuneados):
+        loot y captura deben ceder para no robarle el turno."""
         hp = self._slot_hp(state)
         if hp is not None and hp <= 0:
             return True
-        return self._skills_used(state)
+        _used, exhausted = self._combo_status(state)
+        if exhausted:
+            return True
+        return self._stun_active(state, bb) and self._alive_in_range(state) > 0
 
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
         if bb.paused or not self.cfg.get("enabled", True):
             return False
-        need = self._need(state)
-        # si se uso un stun, se puede revivir aunque haya pokemones en pantalla
-        stun = self._stun_used(state)
-        # 1) revivir es obligatorio antes de retomar la ruta: se marca pendiente
-        # mientras haga falta, y la ruta no continua hasta revivir.
-        if need or stun:
-            bb.notes["revive_pending"] = True
-        else:
-            bb.notes.pop("revive_pending", None)
+        hp = self._slot_hp(state)
+        dead = hp is not None and hp <= 0
+        used, exhausted = self._combo_status(state)
+        stun = self._stun_active(state, bb)
         rec = bb.notes.get("revive_rec")
-        if rec:
-            if self._enemies_on_screen(state) and not stun:
-                bb.notes.pop("revive_rec", None)
-                return False
+        # revivir es obligatorio antes de retomar la ruta: se marca pendiente
+        if dead or used or stun:
+            bb.notes["revive_pending"] = True
+        elif not rec:
+            bb.notes.pop("revive_pending", None)
+            bb.notes.pop("revive_fast", None)
+        if dead:
+            # URGENTE: pokemon debilitado -> revivir ya, lo mas rapido posible
+            bb.notes["revive_fast"] = True
             return True
-        if not need and not stun:
+        if rec:
+            # la secuencia ya esta en marcha: se completa SIEMPRE
+            return True
+        if not used and not stun:
             return False
-        if self._enemies_on_screen(state) and not stun:
-            return False
-        # intervalo minimo entre revives (evita revivir en bucle)
-        if time.time() - bb.notes.get("revive_done", 0.0) < float(self.cfg.get("min_interval_secs", 8.0)):
-            return False
-        return True
+
+        now = time.time()
+        in_range = self._alive_in_range(state)
+        min_done = now - bb.notes.get("revive_done", 0.0)
+        last_aoe = now - bb.notes.get("last_aoe_at", 0.0)
+
+        if in_range == 0:
+            # A) no queda enemigo vivo en rango de ataque -> revivir.
+            #    Si ademas no hay skills (agotado), rapido.
+            fast = exhausted
+            if not fast and last_aoe < float(self.cfg.get("after_aoe_wait_secs", 1.0)):
+                return False
+            guard = (float(self.cfg.get("fast_min_interval_secs", 0.6)) if fast
+                     else float(self.cfg.get("min_interval_secs", 8.0)))
+            if min_done < guard:
+                return False
+            if fast:
+                bb.notes["revive_fast"] = True
+            return True
+        if stun:
+            # B) quedan vivos pero aturdidos -> revivir rapido (el stun dura poco)
+            if last_aoe < float(self.cfg.get("after_aoe_wait_secs", 1.0)):
+                return False
+            if min_done < float(self.cfg.get("stun_min_interval_secs", 0.6)):
+                return False
+            bb.notes["revive_fast"] = True
+            return True
+        if exhausted:
+            # C) sin skills del combo para lanzar -> resetear igual, lo mas rapido
+            if min_done < float(self.cfg.get("fast_min_interval_secs", 0.6)):
+                return False
+            bb.notes["revive_fast"] = True
+            return True
+        # D) vivos sin stun y con skills listas -> seguir casteando
+        return False
 
     def act(self, state: GameState, bb: Blackboard, inp) -> None:
         now = time.time()
         slot = self._slot()
-        cd = float(self.cfg.get("click_delay", 0.3))
-        vd = float(self.cfg.get("verify_delay", 1.5))
+        hp0 = self._slot_hp(state)
+        dead = hp0 is not None and hp0 <= 0
+        fast = dead or bool(bb.notes.get("revive_fast"))
+        cd = float(self.cfg.get("click_delay", 0.15))
+        vd = float(self.cfg.get("verify_delay", 0.5))
+        ww = float(self.cfg.get("withdraw_wait_secs", 0.5))
+        if fast:
+            # revive urgente/rapido: minimizar cada espera
+            cd = float(self.cfg.get("urgent_click_delay", 0.05))
+            vd = float(self.cfg.get("urgent_verify_delay", 0.25))
+            ww = float(self.cfg.get("urgent_withdraw_wait", 0.25))
         rec = bb.notes.get("revive_rec")
         if rec is None:
-            bb.notes["revive_rec"] = {"slot": slot, "step": "recall", "t": now}
+            bb.notes["revive_rec"] = {"slot": slot, "step": "recall", "t": now,
+                                      "first": (self._revives_done == 0 and not fast)}
             return
         step = rec["step"]
         if step == "recall":
-            # el pokemon debe estar guardado: si hay activo, retirarlo
+            # el pokemon debe estar guardado: si hay activo, retirarlo.
+            # La PRIMERA vez se esperan 2 s ANTES de guardarlo; las siguientes no.
             if state.active_pokemon_name:
-                if now - rec["t"] >= cd:
+                pre = float(self.cfg.get("first_revive_wait_secs", 2.0)) if rec.get("first") else 0.0
+                if now - rec["t"] >= cd + pre:
                     inp.click_slot(slot)
                     rec["step"] = "recall_wait"
                     rec["t"] = now
@@ -903,7 +1221,8 @@ class ReviveBehavior(Behavior):
                 rec["t"] = now
             return
         if step == "recall_wait":
-            if not state.active_pokemon_name or now - rec["t"] > 2.0:
+            # confirmar que quedo guardado (sin espera extra); tope ww
+            if not state.active_pokemon_name or now - rec["t"] > ww:
                 rec["step"] = "revive"
                 rec["t"] = now
             return
@@ -916,8 +1235,15 @@ class ReviveBehavior(Behavior):
         # call: sacar el pokemon tras revivir/resetear el cooldown
         if now - rec["t"] >= vd:
             inp.call_slot(slot)
+            post = self.cfg.get("post_mode")
+            if post is not None:
+                # volver a defensivo para retomar el lure
+                inp.set_fight_mode(int(post))
+                bb.notes["fight_mode_set"] = int(post)
             bb.notes["revive_done"] = now
             bb.notes.pop("revive_rec", None)
+            bb.notes.pop("revive_fast", None)
+            self._revives_done += 1
 
 
 def make_walkable(state: GameState, static_map: Optional[list] = None):
@@ -952,6 +1278,41 @@ class RouteBehavior(Behavior):
         self._idle_until = 0.0
         self._idled_start = False
         self._looped = False
+        self.pokemon = ""            # nombre del pokemon elegido para la ruta
+        self.pokemon_slot = None     # slot de reserva si no hay nombre
+        self._pending_call = False   # sacar el pokemon al empezar la ruta
+
+    def set_pokemon(self, name, slot) -> None:
+        """Selecciona el pokemon de la ruta; programa sacarlo al iniciarla."""
+        name = str(name or "")
+        if name == self.pokemon and slot == self.pokemon_slot:
+            return
+        self.pokemon = name
+        self.pokemon_slot = slot
+        self._pending_call = True
+        self._idle_until = 0.0
+        self._idled_start = False
+        self._looped = False
+
+    def _resolve_pokemon_slot(self, state: GameState):
+        if self.pokemon:
+            for p in state.party:
+                if getattr(p, "name", "") == self.pokemon:
+                    return p.slot
+        if self.pokemon_slot is not None:
+            return int(self.pokemon_slot)
+        return None
+
+    def _use_pokemon(self, state: GameState, bb: Blackboard, inp) -> None:
+        """Al empezar la ruta, saca (callslot) el pokemon elegido."""
+        self._pending_call = False
+        # ya esta activo: no hay que sacarlo (evita retirarlo si callslot alterna)
+        if self.pokemon and state.active_pokemon_name == self.pokemon:
+            return
+        slot = self._resolve_pokemon_slot(state)
+        if slot:
+            inp.call_slot(int(slot))
+            bb.notes["route_pokemon_called"] = int(slot)
 
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
         if bb.paused or not self.cfg.get("enabled", True) or self.route is None:
@@ -989,14 +1350,25 @@ class RouteBehavior(Behavior):
         return waypoint
 
     def _segment(self, pos: Vec3, final: Vec3) -> Vec3:
-        """Punto de navegacion dentro del rango cargado hacia el waypoint final."""
+        """Punto de navegacion dentro del rango cargado hacia el waypoint final.
+        Usa el camino REAL sobre otmm (astar), no la recta, para no cortar
+        esquinas ni darse la vuelta al cruzar el eje del waypoint."""
         maxd = int(self.cfg.get("max_nav_dist", 8))
         if pos.distance(final) <= maxd:
             return final
+        wm = self.world
+        otmm = getattr(wm, "otmm", None) if wm is not None else None
+        if wm is not None and otmm is not None and getattr(otmm, "ready", False):
+            path = wm.plan_to(pos, final.x, final.y)
+            if path:
+                for p in path:
+                    if pos.distance(p) >= maxd:
+                        return p
+                return path[-1]
+        # fallback: recta + snap a caminable
         dx = (final.x > pos.x) - (final.x < pos.x)
         dy = (final.y > pos.y) - (final.y < pos.y)
         gx, gy = pos.x + dx * maxd, pos.y + dy * maxd
-        otmm = getattr(self.world, "otmm", None) if self.world else None
         if otmm is not None and getattr(otmm, "ready", False):
             for ox, oy in [(0, 0), (dx, 0), (0, dy), (dx, dy), (-dx, 0), (0, -dy)]:
                 if otmm.pathable(gx + ox, gy + oy, final.z):
@@ -1004,6 +1376,9 @@ class RouteBehavior(Behavior):
         return Vec3(gx, gy, final.z)
 
     def act(self, state: GameState, bb: Blackboard, inp) -> None:
+        if self._pending_call:
+            self._use_pokemon(state, bb, inp)
+            return
         now = time.time()
         # temporizador en idle al llegar al punto de inicio del recorrido
         if now < self._idle_until:
@@ -1199,6 +1574,58 @@ class ExploreBehavior(Behavior):
             self._sent_at = 0.0
 
 
+class SummonBehavior(Behavior):
+    """Mantiene el ownsummon cerca del player, priorizando un tile cuyos 8
+    vecinos esten libres (caminables). Ordena al pokemon con 'order'."""
+
+    name = "summon"
+    priority = 12
+
+    def __init__(self, cfg: dict, settings: dict, world=None):
+        super().__init__(cfg, settings)
+        self.world = world
+
+    def _otmm(self):
+        wm = self.world
+        mm = getattr(wm, "otmm", None) if wm is not None else None
+        return mm if (mm is not None and getattr(mm, "ready", False)) else None
+
+    def _neighbors_free(self, mm, x: int, y: int, z: int) -> bool:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                if not mm.pathable(x + dx, y + dy, z):
+                    return False
+        return True
+
+    def _best_tile(self, state: GameState, mm) -> Optional[Vec3]:
+        return summon_near_tile(state, mm, int(self.cfg.get("radius", 4)))
+
+    def evaluate(self, state: GameState, bb: Blackboard) -> bool:
+        if bb.paused or not self.cfg.get("enabled", True):
+            return False
+        mm = self._otmm()
+        if mm is None:
+            return False
+        pp = getattr(state, "pokemon_pos", None)
+        if not pp:
+            return False
+        if not bb.ready("summon", float(self.cfg.get("interval_secs", 3.0))):
+            return False
+        pk = Vec3(int(pp[0]), int(pp[1]), int(pp[2]))
+        far = pk.distance(state.player.pos) > int(self.cfg.get("max_dist", 2))
+        blocked = not self._neighbors_free(mm, pk.x, pk.y, pk.z)
+        return far or blocked
+
+    def act(self, state: GameState, bb: Blackboard, inp) -> None:
+        mm = self._otmm()
+        t = self._best_tile(state, mm) if mm is not None else None
+        if t is not None:
+            inp.order(t)
+        bb.mark("summon")
+
+
 def build_behaviors(cfg: dict, route: Optional[Route], world=None) -> list[Behavior]:
     behaviors_cfg = cfg.get("behaviors", {})
     settings = cfg.get("settings", {})
@@ -1207,9 +1634,11 @@ def build_behaviors(cfg: dict, route: Optional[Route], world=None) -> list[Behav
         HealingBehavior(behaviors_cfg.get("healing", {}), settings),
         CaptureBehavior(behaviors_cfg.get("capture", {}), settings),
         CombatBehavior(behaviors_cfg.get("combat", {}), settings, world),
-        LootBehavior(behaviors_cfg.get("loot", {}), settings),
-        ReviveBehavior(behaviors_cfg.get("revive", {}), settings),
+        LootBehavior(behaviors_cfg.get("loot", {}), settings, world),
+        ReviveBehavior(behaviors_cfg.get("revive", {}), settings,
+                       behaviors_cfg.get("combat", {})),
         RouteBehavior(behaviors_cfg.get("route", {}), settings, route, world),
+        SummonBehavior(behaviors_cfg.get("summon", {}), settings, world),
         ExploreBehavior(behaviors_cfg.get("explore", {}), settings, world),
     ]
     behaviors.sort(key=lambda b: b.priority, reverse=True)

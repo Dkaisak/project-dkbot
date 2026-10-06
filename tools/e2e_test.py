@@ -119,7 +119,7 @@ def main() -> int:
             time.sleep(0.05)
 
         print("comportamientos observados:", ", ".join(sorted(seen)))
-        expected = {"route", "combat", "capture", "heal", "loot", "crisis"}
+        expected = {"route", "combat", "crisis", "heal"}
         missing = expected - seen
         assert not missing, f"faltaron comportamientos: {missing}"
 

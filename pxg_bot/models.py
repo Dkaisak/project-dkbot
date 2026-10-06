@@ -150,10 +150,12 @@ class GameState:
     captured: bool = False
     active_pokemon_name: str = ""
     skill_order: list = field(default_factory=list)
+    lure_order: list = field(default_factory=list)
     moves: list = field(default_factory=list)
     bag: list = field(default_factory=list)
     server_msgs: list = field(default_factory=list)
     defeated: list = field(default_factory=list)
+    fight_mode: Optional[int] = None
     camera: Optional[tuple] = None
     map_rect: Optional[dict] = None
     tile_size: Optional[dict] = None

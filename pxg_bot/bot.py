@@ -9,7 +9,7 @@ from typing import Optional
 from . import control as control_io
 from .behaviors import Blackboard, build_behaviors
 from .humanizer import Humanizer
-from .models import CreatureKind, GameState
+from .models import CreatureKind, GameState, Player, Vec3
 from .pathfinding import Route
 
 
@@ -30,12 +30,17 @@ class Bot:
         self.status_file = control_io.status_path(cfg)
         self._pid_file = self._derive_pid_file()
         self.world = self._build_world(cfg)
+        self._densify_route()
         self.behaviors = build_behaviors(cfg, route, self.world)
+        self._revive_behavior = next((b for b in self.behaviors if b.name == "revive"), None)
         self._orig_enabled = {b.name: b.cfg.get("enabled", True) for b in self.behaviors}
+        rcfg0 = cfg.get("route") or {}
+        self._set_route_pokemon(rcfg0.get("pokemon", ""), rcfg0.get("pokemon_slot"))
         self.control_paused = False
         self._control_mtime = 0.0
         self._control_checked = 0.0
         self._route_fp = None
+        self._last_order = None
         self.last_chosen = None
         self.started_at = time.time()
         self.break_until = 0.0
@@ -85,8 +90,16 @@ class Bot:
         )
 
     def tick(self):
-        state = self.source.read_state()
+        try:
+            state = self.source.read_state()
+        except Exception as exc:
+            # un estado malformado no debe matar el bot: se trata como desconexion
+            if self.verbose:
+                print(f"[!] read_state: {exc}")
+            state = GameState(player=Player(), connected=False)
         self._manage_pause(state)
+        # urgencia de revive: si el pokemon de la ruta esta debilitado, revive manda
+        self.bb.notes["revive_urgent"] = self._revive_is_urgent(state)
         if not (self.bb.paused or self.control_paused):
             self.bb.update_corpses(state)
         chosen = None
@@ -148,21 +161,82 @@ class Bot:
         route = data.get("route")
         if isinstance(route, dict) and route.get("waypoints") is not None:
             self._apply_route(route)
+        order = data.get("order")
+        if isinstance(order, (list, tuple)) and len(order) >= 2:
+            key = (int(order[0]), int(order[1]))
+            if key != self._last_order:
+                self._last_order = key
+                z = int(order[2]) if len(order) > 2 else 0
+                self.inp.order(Vec3(int(order[0]), int(order[1]), z))
 
     def _apply_route(self, route: dict) -> None:
         wps = route.get("waypoints") or []
+        pokemon = str(route.get("pokemon", "") or "")
+        pslot = route.get("pokemon_slot")
         fp = (tuple(tuple(int(v) for v in w) for w in wps),
               bool(route.get("loop", True)), bool(route.get("ping_pong", False)),
-              bool(route.get("enabled", True)))
+              bool(route.get("enabled", True)), pokemon, pslot)
         if fp == self._route_fp:
             return
         self._route_fp = fp
         self.route = Route.from_config(wps, loop=fp[1], ping_pong=fp[2]) if wps else None
+        self._densify_route()
         self.bb.route = self.route
         for behavior in self.behaviors:
             if behavior.name == "route":
                 behavior.route = self.route
                 behavior.cfg["enabled"] = bool(route.get("enabled", True))
+        self._set_route_pokemon(pokemon, pslot)
+
+    def _set_route_pokemon(self, name, slot) -> None:
+        for behavior in self.behaviors:
+            if behavior.name == "route":
+                behavior.set_pokemon(name, slot)
+            elif behavior.name == "revive":
+                # el revive se vincula al slot del Pokemon de la ruta
+                behavior.set_route_slot(slot)
+
+    def _revive_is_urgent(self, state) -> bool:
+        """Revive de alta prioridad (debilitado / combo agotado / vivos
+        stuneados): loot y captura ceden para no robarle el turno."""
+        rb = self._revive_behavior
+        if rb is None:
+            return False
+        return rb.urgent(state, self.bb)
+
+    def _densify_route(self) -> None:
+        """Sustituye los waypoints por el camino real (astar/otmm) para que la
+        ruta siga el corredor y no corte esquinas."""
+        route = self.route
+        wm = self.world
+        otmm = getattr(wm, "otmm", None) if wm is not None else None
+        if route is None or wm is None or otmm is None or not getattr(otmm, "ready", False):
+            return
+        rcfg = self.cfg.get("behaviors", {}).get("route", {})
+        if not rcfg.get("densify", True):
+            return
+        wps = route.waypoints
+        n = len(wps)
+        if n < 2:
+            return
+        dense: list[Vec3] = []
+        for i in range(n):
+            a = wps[i]
+            b = wps[(i + 1) % n] if route.loop else (wps[i + 1] if i + 1 < n else None)
+            if not dense or dense[-1] != a:
+                dense.append(a)
+            if b is None:
+                continue
+            path = wm.plan_to(a, b.x, b.y)
+            if path and len(path) > 2:
+                for p in path[1:-1]:
+                    if dense and dense[-1].x == p.x and dense[-1].y == p.y and dense[-1].z == p.z:
+                        continue
+                    dense.append(p)
+            if len(dense) > 5000:
+                break
+        if dense:
+            route.waypoints = dense
 
     def write_status(self, chosen: Optional[str], state: Optional[GameState]) -> None:
         if not self.status_file:
@@ -323,6 +397,7 @@ class Bot:
             f"t={self.ticks:04d} pos=({p.pos.x},{p.pos.y},{p.pos.z}) "
             f"hp={p.hp_pct}% mp={p.mp_pct}% enemigos={sum(1 for c in state.creatures if c.attackable)} "
             f"loot={len(self.bb.notes.get('corpses_pending', []))} lootd={pd} def={len(state.defeated)} "
+            f"fm={getattr(state, 'fight_mode', None)} "
             f"loott={self.bb.notes.get('loot_phase_elapsed', 0.0):.1f} "
             f"cov={self.bb.notes.get('loot_cur', -1)}/{self.bb.notes.get('loot_best', -1)} "
             f"bopt={self.bb.notes.get('loot_bopt')} "

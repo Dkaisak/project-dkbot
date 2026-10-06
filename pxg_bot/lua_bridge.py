@@ -124,7 +124,11 @@ class LuaStateSource:
             )
 
         for c in data.get("creatures", []):
-            add_creature(int(c.get("id", 0)), c)
+            try:
+                cid = int(c.get("id", 0))
+            except (TypeError, ValueError):
+                cid = 0
+            add_creature(cid, c)
         for tile in data.get("nearby", []):
             for c in tile.get("creatures", []):
                 add_creature(len(creatures) + 1, c)
@@ -177,19 +181,23 @@ class LuaStateSource:
         state.active_pokemon_name = str(data.get("active_pokemon", "") or "")
         state.moves = data.get("moves", [])
         state.party = [
-            Pokemon(slot=int(p.get("slot", 0)), name=str(p.get("id", "") or ""),
+            Pokemon(slot=int(p.get("slot", 0)),
+                    name=str(p.get("name") or p.get("id") or ""),
                     hp_pct=int(p.get("hp", 0)), alive=int(p.get("hp", 0)) > 0)
             for p in (data.get("party", []) or [])
         ]
         if self.pokemon_skills is not None:
             self.pokemon_skills.observe(state.active_pokemon_name, state.moves)
             state.skill_order = self.pokemon_skills.order_for(state.active_pokemon_name)
+            state.lure_order = self.pokemon_skills.lure_order_for(state.active_pokemon_name)
             if time.time() - self._last_skills_save > 10:
                 self.pokemon_skills.save()
                 self._last_skills_save = time.time()
         state.bag = data.get("bag", [])
         state.server_msgs = data.get("server_msgs", [])
         state.defeated = data.get("defeated", [])
+        fm = data.get("fight_mode")
+        state.fight_mode = int(fm) if isinstance(fm, (int, float)) else None
         cam = data.get("camera")
         state.camera = (int(cam["x"]), int(cam["y"])) if cam else None
         state.map_rect = data.get("map_rect")
@@ -276,6 +284,14 @@ class LuaInput(BaseInput):
     def click_slot(self, slot: int) -> None:
         self.bridge.send(f"clickslot {int(slot)}")
 
+    def set_fight_mode(self, mode: int) -> None:
+        # 1=Ofensivo, 2=Equilibrado, 3=Defensivo (FightModes del cliente)
+        self.bridge.send(f"setfightmode {int(mode)}")
+
+    def ball(self, item_id: int, target: Vec3) -> None:
+        # aplica la ball al Thing del tile, sin mover el cursor (Lua)
+        self.bridge.send(f"ball {int(item_id)} {target.x} {target.y} {target.z}")
+
     def call_slot(self, slot: int) -> None:
         self.bridge.send(f"callslot {int(slot)}")
 
@@ -286,18 +302,13 @@ class LuaInput(BaseInput):
         self.bridge.send(line)
 
     def revive(self, slot: int, item_id: int = 2269) -> None:
-        # El item se aplica sobre el Thing bajo el cursor: movemos el puntero
-        # fisico al slot (XTest) y el agente aplica el revive.
-        data = self.bridge.read()
-        sp = (data.get("slot_pos") or {}).get(str(int(slot)))
-        if not sp:
-            return
-        wx, wy = 0, 0
-        wp = data.get("win_pos") or {}
-        wx, wy = int(wp.get("x", 0)), int(wp.get("y", 0))
-        from . import x11mouse
-        if not x11mouse.move(int(sp.get("x", 0)) + wx, int(sp.get("y", 0)) + wy):
-            return
-        time.sleep(0.15)
-        self.bridge.send(f"revive {int(item_id)}")
+        # El agente aplica el item al slot por pokeId (Pokeball), SIN mover el
+        # cursor fisico -> no necesita X11.
+        self.bridge.send(f"reviveslot {int(slot)} {int(item_id)}")
+
+    def order(self, target: Vec3) -> None:
+        # order: ordena el pokemon propio (ownsummon) al tile. El agente lo
+        # resuelve por coordenadas (tileToScreen + getMapThingByMousePosition),
+        # SIN mover el cursor fisico -> no necesita X11.
+        self.bridge.send(f"order {int(target.x)} {int(target.y)} {int(target.z)}")
 

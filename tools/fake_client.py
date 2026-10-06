@@ -121,6 +121,9 @@ def update(layout: Layout, phase: int) -> None:
         pk.level = 0
     pk = layout.party[0]
     pk.slot, pk.name, pk.hp_pct, pk.active, pk.alive, pk.level = 0, b"Pikachu", 100, 1, 1, 10
+    # slot 3 sano: evita que ReviveBehavior se dispare en el escenario de memoria
+    pk3 = layout.party[3]
+    pk3.slot, pk3.name, pk3.hp_pct, pk3.alive = 3, b"Slot3", 100, 1
 
     if 3 <= phase < 8:
         hp = [100, 80, 55, 35, 20][min(phase - 3, 4)]
@@ -141,6 +144,7 @@ def update(layout: Layout, phase: int) -> None:
 def main() -> None:
     period = 0.05
     layout = Layout()
+    update(layout, 0)
     print(json.dumps(layout.info()), flush=True)
     start = time.time()
     try:

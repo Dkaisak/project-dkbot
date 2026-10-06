@@ -20,6 +20,7 @@ class ShinyTable:
         self.min_obs = min_obs
         self.counts: dict[str, dict[int, int]] = {}
         self._dirty = False
+        self._seen: set[str] = set()
         self.load()
 
     def load(self) -> None:
@@ -55,11 +56,25 @@ class ShinyTable:
         return outfit if cnt >= self.min_obs else None
 
     def observe(self, creatures) -> None:
+        def key(c) -> str:
+            uid = str(getattr(c, "uid", "") or "")
+            if uid:
+                return uid
+            return f"{c.name}:{c.pos.x}:{c.pos.y}:{c.pos.z}"
+
+        # limpiar de _seen las criaturas que ya no estan (nuevo encuentro -> cuenta)
+        self._seen &= {key(c) for c in creatures}
         for c in creatures:
-            if c.outfit is None or c.is_player or c.is_npc or c.is_self:
+            # no contar jugadores, npcs, uno mismo ni MI PROPIO pokemon (summon),
+            # que esta en pantalla cada tick y contaminaba la tabla.
+            if c.outfit is None or c.is_player or c.is_npc or c.is_self or c.is_summon:
                 continue
             if c.kind != CreatureKind.MONSTER:
                 continue
+            k = key(c)
+            if k in self._seen:
+                continue  # ya contado en este encuentro (dedupe por instancia)
+            self._seen.add(k)
             m = self.counts.setdefault(c.name, {})
             m[c.outfit] = m.get(c.outfit, 0) + 1
             self._dirty = True

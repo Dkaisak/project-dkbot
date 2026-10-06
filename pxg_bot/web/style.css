@@ -79,9 +79,21 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
 
 .psk { display: flex; flex-wrap: wrap; gap: 10px; }
 .psk-mon { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; flex: 1 1 280px; }
+.psk-mon.psk-active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .psk-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .psk-list { display: flex; flex-direction: column; gap: 3px; }
 .psk-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .psk-k { min-width: 16px; text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .psk-aoe { color: var(--accent); font-size: 11px; }
 .psk-sp { flex: 1; }
+
+.party { display: flex; flex-direction: column; gap: 6px; }
+.party-row { display: flex; align-items: center; gap: 8px; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
+.party-row:hover { border-color: var(--accent); }
+.party-row.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.party-row.on { box-shadow: inset 0 0 0 1px var(--ok); }
+.party-slot { min-width: 58px; color: var(--muted); }
+.party-name { min-width: 90px; }
+.party .bar { flex: 1; height: 14px; }
+.party .bar span { line-height: 14px; }

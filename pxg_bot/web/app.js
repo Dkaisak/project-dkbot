@@ -1,7 +1,7 @@
 "use strict";
 
 /* ---------------- estado general ---------------- */
-const BEHAVIORS = ["crisis", "healing", "combat", "loot", "revive", "explore"];
+const BEHAVIORS = ["crisis", "combat", "loot", "revive", "explore"];
 let togglesBuilt = false;
 let logAutoScroll = true;
 let lastState = {};
@@ -64,6 +64,95 @@ function buildSkills(keys) {
     box.appendChild(b);
   });
 }
+let routePokemon = { name: "", slot: null };
+
+let partyNames = {};
+try { partyNames = JSON.parse(localStorage.getItem("pxgPartyNames") || "{}") || {}; } catch (e) { partyNames = {}; }
+function savePartyNames() { try { localStorage.setItem("pxgPartyNames", JSON.stringify(partyNames)); } catch (e) {} }
+
+function updatePartySelect(party, active) {
+  // aprender el nombre de los slots que esten activos (el cliente no lo expone por slot)
+  let learned = false;
+  for (const p of party) {
+    if (p.active && active && p.pokeId && partyNames[p.pokeId] !== active) {
+      partyNames[p.pokeId] = active;
+      learned = true;
+    }
+  }
+  if (learned) savePartyNames();
+  const nameOf = (p) => p.name || partyNames[p.pokeId] || "";
+
+  // selector de Pokemon de la ruta
+  const sel = document.getElementById("route-pokemon");
+  if (sel) {
+    const struct = party.map((p) => String(p.slot)).join("|");
+    if (sel.dataset.struct !== struct) {
+      sel.innerHTML = '<option value="">(ninguno)</option>';
+      for (const p of party) {
+        const opt = document.createElement("option");
+        opt.value = String(p.slot);
+        sel.appendChild(opt);
+      }
+      sel.dataset.struct = struct;
+    }
+    for (const opt of sel.options) {
+      if (!opt.value) continue;
+      const slot = parseInt(opt.value, 10);
+      const p = party.find((x) => x.slot === slot);
+      if (!p) continue;
+      const nm = nameOf(p);
+      opt.dataset.name = nm;
+      opt.textContent = `Slot ${slot}${nm ? " — " + nm : ""}`;
+    }
+    let want = routePokemon.slot != null ? String(routePokemon.slot) : "";
+    if (routePokemon.name) {
+      const byName = [...sel.options].find((o) => o.dataset.name === routePokemon.name);
+      if (byName) want = byName.value;
+    }
+    sel.value = [...sel.options].some((o) => o.value === want) ? want : "";
+  }
+  const info = document.getElementById("route-pokemon-info");
+  if (info) info.textContent = routePokemon.name
+    ? `se saca al iniciar: ${routePokemon.name} (slot ${routePokemon.slot})`
+    : (routePokemon.slot != null ? `se saca al iniciar: slot ${routePokemon.slot}` : "se saca al iniciar la ruta");
+
+  // tarjeta de equipo: una fila por slot, clic = elegir para la ruta
+  const box = document.getElementById("party");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!party.length) {
+    box.innerHTML = '<div class="muted small">sin datos (agente no activo / fuera del juego)</div>';
+    return;
+  }
+  for (const p of party) {
+    const row = document.createElement("div");
+    row.className = "party-row";
+    if (routePokemon.slot === p.slot) row.classList.add("sel");
+    if (p.active) row.classList.add("on");
+    const nm = nameOf(p);
+    const hp = p.hp != null ? p.hp : 0;
+    row.innerHTML =
+      `<span class="party-slot">${p.active ? "●" : "○"} Slot ${p.slot}</span>` +
+      `<span class="party-name">${nm || "—"}</span>` +
+      `<div class="bar"><i style="width:${hp}%"></i><span>${p.hp != null ? p.hp + "%" : ""}</span></div>`;
+    row.title = "Elegir este Pokémon (slot " + p.slot + ") para la ruta";
+    row.onclick = () => {
+      routePokemon = { name: nm, slot: p.slot };
+      updatePartySelect(party, active);
+    };
+    box.appendChild(row);
+  }
+}
+
+function setRoutePokemon(name, slot) {
+  routePokemon = {
+    name: name || "",
+    slot: (slot === null || slot === undefined || slot === "") ? null : parseInt(slot, 10),
+  };
+  updatePartySelect(lastState ? (lastState.party || []) : [],
+                   lastState ? (lastState.active_pokemon || "") : "");
+}
+
 function renderState(s) {
   lastState = s;
   document.getElementById("conn").classList.toggle("on", !!s.connected);
@@ -103,6 +192,22 @@ function renderState(s) {
   const combat = (s.control && s.control.combat) || {};
   const aoemin = document.getElementById("aoemin");
   if (document.activeElement !== aoemin && combat.lure_visible_min != null) aoemin.value = combat.lure_visible_min;
+  const grpmin = document.getElementById("grpmin");
+  if (document.activeElement !== grpmin && combat.lure_enter_min != null) grpmin.value = combat.lure_enter_min;
+  const inrmin = document.getElementById("inrmin");
+  if (document.activeElement !== inrmin && combat.cast_min_in_range != null) inrmin.value = combat.cast_min_in_range;
+  const atkrange = document.getElementById("atkrange");
+  if (document.activeElement !== atkrange && combat.attack_range != null) atkrange.value = combat.attack_range;
+  const engrange = document.getElementById("engrange");
+  if (document.activeElement !== engrange && combat.engage_radius != null) engrange.value = combat.engage_radius;
+  const panic = document.getElementById("panic");
+  if (document.activeElement !== panic && combat.panic_hp != null) panic.value = combat.panic_hp;
+  const readypct = document.getElementById("readypct");
+  if (document.activeElement !== readypct && combat.ready_pct != null) readypct.value = combat.ready_pct;
+  const reqall = document.getElementById("reqall");
+  if (document.activeElement !== reqall && combat.require_all_close != null) reqall.checked = !!combat.require_all_close;
+
+  updatePartySelect(s.party || [], s.active_pokemon || "");
 
   const moves = s.moves || [];
   if (document.getElementById("skills").childElementCount !== moves.length) {
@@ -233,6 +338,7 @@ async function loadRouteIntoEditor() {
   routeWps = (r.waypoints || []).map((p) => [p[0], p[1], p[2] ?? view.z]);
   document.getElementById("m-loop").checked = r.loop !== false;
   document.getElementById("m-pp").checked = !!r.ping_pong;
+  setRoutePokemon(r.pokemon, r.pokemon_slot);
   drawMap();
 }
 
@@ -253,15 +359,23 @@ async function refreshRoutes() {
 
 let pskOrder = {};
 let pskKeys = {};
+let pskLureSel = {};
 
 function renderPskList(name, skills, list) {
   list.innerHTML = "";
   const ord = pskOrder[name] || [];
+  const sel = pskLureSel[name] || new Set();
   ord.forEach((k, idx) => {
     const s = skills[k] || {};
     const row = document.createElement("div");
     row.className = "psk-row";
-    row.innerHTML = `<span class="psk-k">${k}</span> <span class="psk-name">${s.name || ""}</span>` +
+    const chk = document.createElement("input");
+    chk.type = "checkbox";
+    chk.checked = sel.has(k);
+    chk.title = "usar esta skill en el combo del lure";
+    chk.onchange = () => { if (chk.checked) sel.add(k); else sel.delete(k); };
+    const label = document.createElement("span");
+    label.innerHTML = `<span class="psk-k">${k}</span> <span class="psk-name">${s.name || ""}</span>` +
       (s.aoe ? ' <span class="psk-aoe">AoE</span>' : "") +
       ` <span class="muted small">${s.effect || ""}</span>`;
     const up = document.createElement("button");
@@ -271,7 +385,8 @@ function renderPskList(name, skills, list) {
     down.className = "mini"; down.textContent = "↓";
     down.onclick = () => { const a = pskOrder[name]; if (idx < a.length - 1) { [a[idx], a[idx + 1]] = [a[idx + 1], a[idx]]; renderPskList(name, skills, list); } };
     const sp = document.createElement("span"); sp.className = "psk-sp";
-    row.appendChild(sp); row.appendChild(up); row.appendChild(down);
+    row.appendChild(chk); row.appendChild(label); row.appendChild(sp);
+    row.appendChild(up); row.appendChild(down);
     list.appendChild(row);
   });
 }
@@ -280,6 +395,7 @@ async function refreshPokemonSkills() {
   const data = await api("/api/pokemon_skills");
   const pokemon = data.pokemon || {};
   const order = data.order || {};
+  const lureOrder = data.lure_order || {};
   const box = document.getElementById("psk");
   box.innerHTML = "";
   const names = Object.keys(pokemon).sort();
@@ -288,8 +404,9 @@ async function refreshPokemonSkills() {
   for (const name of names) {
     const skills = pokemon[name];
     const sig = Object.keys(skills).sort().join(",");
+    const sameKeys = pskKeys[name] === sig && pskOrder[name];
     let ord;
-    if (pskKeys[name] === sig && pskOrder[name]) {
+    if (sameKeys) {
       ord = pskOrder[name];
     } else {
       ord = (order[name] || []).filter((k) => k in skills);
@@ -297,17 +414,50 @@ async function refreshPokemonSkills() {
     }
     pskKeys[name] = sig;
     pskOrder[name] = ord;
+    if (!sameKeys || !pskLureSel[name]) {
+      const saved = (lureOrder[name] || []).filter((k) => k in skills);
+      pskLureSel[name] = new Set(saved.length ? saved : Object.keys(skills).filter((k) => skills[k].aoe));
+    }
+    const activeName = (lastState && lastState.active_pokemon) || "";
     const card = document.createElement("div");
     card.className = "psk-mon";
+    if (name === activeName) card.classList.add("psk-active");
     const title = document.createElement("div");
     title.className = "psk-title";
-    title.innerHTML = `<b>${name}</b>`;
+    title.innerHTML = `<b>${name}</b>` +
+      (name === activeName ? ' <span class="psk-aoe">activo</span>' : "");
     const save = document.createElement("button");
     save.className = "mini primary";
     save.textContent = "Guardar orden";
     save.onclick = () => api("/api/pokemon_skills/order", "POST", { name, order: pskOrder[name] });
+    const saveLure = document.createElement("button");
+    saveLure.className = "mini";
+    saveLure.textContent = "Guardar combo lure";
+    saveLure.title = "las skills marcadas, en el orden de la lista, se usan en cada lure";
+    saveLure.onclick = () => {
+      const keys = pskOrder[name].filter((k) => pskLureSel[name].has(k));
+      api("/api/pokemon_skills/lure_order", "POST", { name, order: keys });
+    };
+    const del = document.createElement("button");
+    del.className = "mini ghost";
+    del.textContent = "✕";
+    del.title = name === activeName
+      ? "no se puede borrar el Pokémon activo" : "borrar del catálogo";
+    del.disabled = (name === activeName);
+    del.onclick = async () => {
+      if (name === activeName) return;
+      await api("/api/pokemon_skills/delete", "POST", { name });
+      delete pskOrder[name]; delete pskKeys[name]; delete pskLureSel[name];
+      await refreshPokemonSkills();
+    };
+    title.appendChild(saveLure);
     title.appendChild(save);
+    title.appendChild(del);
     card.appendChild(title);
+    const hint = document.createElement("div");
+    hint.className = "muted small";
+    hint.textContent = "✔ = skill del combo del lure (se usa en este orden)";
+    card.appendChild(hint);
     const list = document.createElement("div");
     list.className = "psk-list";
     card.appendChild(list);
@@ -393,6 +543,7 @@ function wireMap() {
     api("/api/route", "POST", {
       waypoints: routeWps, loop: document.getElementById("m-loop").checked,
       ping_pong: document.getElementById("m-pp").checked, enabled: true,
+      pokemon: routePokemon.name, pokemon_slot: routePokemon.slot,
     }).then(() => loadRouteIntoEditor());
   };
   document.getElementById("m-load").onclick = async () => {
@@ -404,6 +555,7 @@ function wireMap() {
     routeWps = (r.waypoints || []).map((p) => [p[0], p[1], p[2] ?? view.z]);
     document.getElementById("m-loop").checked = r.loop !== false;
     document.getElementById("m-pp").checked = !!r.ping_pong;
+    setRoutePokemon(r.pokemon, r.pokemon_slot);
     drawMap();
   };
   document.getElementById("m-saveas").onclick = async () => {
@@ -413,6 +565,7 @@ function wireMap() {
       name, waypoints: routeWps,
       loop: document.getElementById("m-loop").checked,
       ping_pong: document.getElementById("m-pp").checked,
+      pokemon: routePokemon.name, pokemon_slot: routePokemon.slot,
     });
     await refreshRoutes();
     document.getElementById("m-routes").value = name;
@@ -422,6 +575,13 @@ function wireMap() {
     if (!name) return;
     await api("/api/routes/delete", "POST", { name });
     await refreshRoutes();
+  };
+  const rpSel = document.getElementById("route-pokemon");
+  if (rpSel) rpSel.onchange = () => {
+    const opt = rpSel.selectedOptions[0];
+    routePokemon = { name: (opt && opt.dataset.name) || "", slot: rpSel.value ? parseInt(rpSel.value, 10) : null };
+    updatePartySelect(lastState ? (lastState.party || []) : [],
+                     lastState ? (lastState.active_pokemon || "") : "");
   };
   c.addEventListener("wheel", (e) => {
     e.preventDefault();
@@ -490,6 +650,27 @@ async function pollWorld() {
 function wire() {
   document.getElementById("btn-start").onclick = () => api("/api/bot", "POST", { action: "start" });
   document.getElementById("btn-stop").onclick = () => api("/api/bot", "POST", { action: "stop" });
+  document.getElementById("btn-attach").onclick = async () => {
+    const btn = document.getElementById("btn-attach");
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Atachando…";
+    try {
+      const r = await api("/api/attach", "POST", {});
+      if (r.ok) {
+        alert(`Cliente atachado\npid: ${r.pid}\nmydata: ${r.mydata}\n` +
+              `agente: ${r.installed ? "inyectado OK" : "NO inyectado"}` +
+              (r.install_output ? `\n\n${r.install_output}` : ""));
+      } else {
+        alert("Error al atachar: " + (r.error || "desconocido"));
+      }
+    } catch (e) {
+      alert("Error: " + e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  };
   document.getElementById("btn-pause").onclick = () => api("/api/control", "POST", { paused: !(lastState.paused) });
   document.getElementById("btn-panic").onclick = async () => {
     await api("/api/command", "POST", { cmd: "stop" });
@@ -509,6 +690,32 @@ function wire() {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { lure_visible_min: n } });
   };
+  document.getElementById("grpmin").onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { combat: { lure_enter_min: n } });
+  };
+  document.getElementById("inrmin").onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { combat: { cast_min_in_range: n } });
+  };
+  document.getElementById("atkrange").onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { combat: { attack_range: n } });
+  };
+  document.getElementById("engrange").onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 0) api("/api/control", "POST", { combat: { engage_radius: n } });
+  };
+  document.getElementById("panic").onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { combat: { panic_hp: n } });
+  };
+  document.getElementById("readypct").onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { combat: { ready_pct: n } });
+  };
+  document.getElementById("reqall").onchange = (e) =>
+    api("/api/control", "POST", { combat: { require_all_close: e.target.checked } });
   document.getElementById("btn-log-clear").onclick = (e) => {
     logAutoScroll = !logAutoScroll;
     e.target.textContent = logAutoScroll ? "auto-scroll" : "scroll off";
@@ -524,7 +731,7 @@ loadRouteIntoEditor();
 refreshRoutes();
 refreshPokemonSkills();
 refreshIgnore();
-setInterval(pollState, 500);
+setInterval(pollState, 300);
 setInterval(pollLog, 1000);
 setInterval(pollWorld, 1000);
 setInterval(refreshPokemonSkills, 4000);

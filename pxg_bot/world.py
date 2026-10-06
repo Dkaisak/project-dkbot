@@ -133,6 +133,11 @@ class WorldMap:
     # --- planificacion ---
     def plan_to(self, start: Vec3, goal_x: int, goal_y: int, max_nodes: int = 20000):
         goal = Vec3(goal_x, goal_y, start.z)
+        otmm = self.otmm
+        if otmm is not None and getattr(otmm, "ready", False):
+            # usar el minimapa con la Z del inicio (no depende de self.z/visit)
+            return astar(start, goal, lambda x, y: otmm.pathable(x, y, start.z),
+                         max_nodes=max_nodes)
         return astar(start, goal, self.walkable, max_nodes=max_nodes)
 
     def plan_coverage(self, start: Vec3, blacklist: set, limit: int = 12):

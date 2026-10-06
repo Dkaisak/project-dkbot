@@ -77,9 +77,16 @@ def _count_enemies(state: dict) -> int:
 class Dashboard:
     def __init__(self, cfg_path: str):
         self.cfg_path = cfg_path
-        self.cfg = load_config(cfg_path)
-        ui = self.cfg.get("ui", {})
-        lua = self.cfg.get("lua", {})
+        self._minimap = None
+        self.proc: subprocess.Popen | None = None
+        self._log_handle = None
+        self.lock = threading.Lock()
+        self._apply_cfg(load_config(cfg_path))
+
+    def _apply_cfg(self, cfg: dict) -> None:
+        self.cfg = cfg
+        ui = cfg.get("ui", {})
+        lua = cfg.get("lua", {})
         self.host = ui.get("host", "127.0.0.1")
         self.port = int(ui.get("port", 8765))
         self.log_file = ui.get("log_file", "")
@@ -93,11 +100,19 @@ class Dashboard:
         self.routes_file = lua.get("routes_file", "")
         self.pokemon_skills_file = lua.get("pokemon_skills_file", "")
         self.ignore_file = lua.get("ignore_file", "")
-        self._minimap = None
         self.pid_file = os.path.join(os.path.dirname(self.status_file), "pxg_bot.pid") if self.status_file else ""
-        self.proc: subprocess.Popen | None = None
-        self._log_handle = None
-        self.lock = threading.Lock()
+
+    def attach_client(self) -> dict:
+        """Detecta el cliente, ajusta rutas e inyecta el agente (boton GUI)."""
+        from . import setup
+
+        with self.lock:
+            process = self.cfg.get("process_name", "pxgme-linux")
+            res = setup.attach(self.cfg_path, process_name=process, install=True)
+            if res.get("ok"):
+                self._apply_cfg(load_config(self.cfg_path))
+                self._minimap = None
+            return res
 
     # --- proceso del bot ---
     def _pid_alive(self, pid: int) -> bool:
@@ -195,6 +210,8 @@ class Dashboard:
             "last_cmd": state.get("last_cmd", ""),
             "enemies": _count_enemies(state),
             "moves": state.get("moves", []),
+            "active_pokemon": state.get("active_pokemon", ""),
+            "party": state.get("party", []),
             "bag": state.get("bag", []),
             "defeated": state.get("defeated", []),
             "battle": state.get("battle", []),
@@ -239,6 +256,8 @@ class Dashboard:
             rc = data.get("route", {})
             route = {"waypoints": rc.get("waypoints", []), "loop": rc.get("loop", True),
                      "ping_pong": rc.get("ping_pong", False)}
+        route.setdefault("pokemon", "")
+        route.setdefault("pokemon_slot", None)
         return route
 
     def save_route(self, route: dict) -> dict:
@@ -249,6 +268,8 @@ class Dashboard:
                 "loop": bool(route.get("loop", True)),
                 "ping_pong": bool(route.get("ping_pong", False)),
                 "enabled": bool(route.get("enabled", True)),
+                "pokemon": str(route.get("pokemon", "") or ""),
+                "pokemon_slot": route.get("pokemon_slot"),
             }
             current["updated"] = time.time()
             control_io.write_control(self.control_file, current)
@@ -277,6 +298,7 @@ class Dashboard:
             data = {}
         pokemon = data.get("pokemon", {}) or {}
         order = data.get("order", {}) or {}
+        lure_order = data.get("lure_order", {}) or {}
         # capturar las skills del pokemon ACTIVO desde el estado del agente
         state = _read_json(self.state_file)
         name = str(state.get("active_pokemon", "") or "")
@@ -295,8 +317,55 @@ class Dashboard:
                     changed = True
             if skills and changed:
                 pokemon[name] = skills
-                self._write_pokemon_skills({"pokemon": pokemon, "order": order})
-        return {"pokemon": pokemon, "order": order}
+                self._write_pokemon_skills({"pokemon": pokemon, "order": order,
+                                            "lure_order": lure_order})
+        return {"pokemon": pokemon, "order": order, "lure_order": lure_order}
+
+    def save_pokemon_lure_order(self, body: dict) -> dict:
+        name = (body.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "sin nombre"}
+        order = [str(k) for k in (body.get("order") or [])]
+        with self.lock:
+            data = _read_json(self.pokemon_skills_file)
+            if not isinstance(data, dict):
+                data = {}
+            data.setdefault("pokemon", {})
+            data.setdefault("order", {})
+            data.setdefault("lure_order", {})
+            # lista vacia = sin combo propio (el lure usa la logica por defecto)
+            if order:
+                data["lure_order"][name] = order
+            else:
+                data["lure_order"].pop(name, None)
+            try:
+                os.makedirs(os.path.dirname(self.pokemon_skills_file), exist_ok=True)
+                tmp = self.pokemon_skills_file + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as handle:
+                    json.dump(data, handle, indent=2, ensure_ascii=False)
+                os.replace(tmp, self.pokemon_skills_file)
+            except OSError as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True, "lure_order": data["lure_order"]}
+
+    def delete_pokemon_skill(self, body: dict) -> dict:
+        """Borra un Pokemon del catalogo (pokemon + order + lure_order)."""
+        name = (body.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "sin nombre"}
+        with self.lock:
+            data = _read_json(self.pokemon_skills_file)
+            if not isinstance(data, dict):
+                data = {}
+            pokemon = data.get("pokemon", {}) or {}
+            order = data.get("order", {}) or {}
+            lure_order = data.get("lure_order", {}) or {}
+            pokemon.pop(name, None)
+            order.pop(name, None)
+            lure_order.pop(name, None)
+            self._write_pokemon_skills({"pokemon": pokemon, "order": order,
+                                        "lure_order": lure_order})
+            return {"ok": True, "name": name}
 
     def save_pokemon_order(self, body: dict) -> dict:
         name = (body.get("name") or "").strip()
@@ -402,6 +471,8 @@ class Dashboard:
                 "waypoints": body.get("waypoints", []),
                 "loop": bool(body.get("loop", True)),
                 "ping_pong": bool(body.get("ping_pong", False)),
+                "pokemon": str(body.get("pokemon", "") or ""),
+                "pokemon_slot": body.get("pokemon_slot"),
             }
             self._write_routes(routes)
             return {"ok": True, "routes": routes}
@@ -609,8 +680,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.app.delete_named_route(body))
         elif path == "/api/pokemon_skills/order":
             self._json(self.app.save_pokemon_order(body))
+        elif path == "/api/pokemon_skills/lure_order":
+            self._json(self.app.save_pokemon_lure_order(body))
+        elif path == "/api/pokemon_skills/delete":
+            self._json(self.app.delete_pokemon_skill(body))
         elif path == "/api/ignore":
             self._json(self.app.patch_ignore(body))
+        elif path == "/api/attach":
+            self._json(self.app.attach_client())
         elif path == "/api/bot":
             action = body.get("action")
             if action == "start":
