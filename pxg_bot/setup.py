@@ -1,10 +1,14 @@
-"""Utilidades para 'atachar' el cliente: detectar su mydata, ajustar la ruta
-del agente + config, e inyectar el agente (via gdb).
+"""Utilidades para 'atachar' el cliente: detectar su mydata, ajustar la ruta del
+agente + config, e inyectar el agente.
+
+- Linux: inyeccion via gdb (`tools/install_agent.py`).
+- Windows: inyeccion via DLL (`tools/inject_windows.py` + `agent_loader`).
 
 Reutilizado por `tools/setup_client.py` y por el boton de la GUI web.
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -15,23 +19,55 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENT = os.path.join(ROOT, "tools", "pxg_agent.lua")
 INSTALL = os.path.join(ROOT, "tools", "install_agent.py")
+INJECT_WINDOWS = os.path.join(ROOT, "tools", "inject_windows.py")
+DLL = os.path.join(ROOT, "tools", "agent_loader", "pxg_agent_loader.dll")
+
+IS_WINDOWS = sys.platform == "win32"
+DEFAULT_PROCESS = "pxgme.exe" if IS_WINDOWS else "pxgme-linux"
 
 LUA_KEYS = [
     "state_file", "cmd_file", "control_file", "status_file", "minimap_file",
     "shiny_file", "pokemon_skills_file", "ignore_file", "routes_file",
 ]
 
+# Linea del agente que fija la ruta por defecto (se reescribe en el attach de
+# Linux; en Windows la DLL inyecta _G.PXG_DIR).
+_AGENT_DIR_RE = re.compile(r'^local DIR = _G\.PXG_DIR or ".*"', re.M)
+
 
 def find_pid(name: str):
+    from .memory import find_pid as _find
+    return _find(name)
+
+
+def _query_exe_windows(pid: int):
     try:
-        out = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True,
-                             timeout=10).stdout.split()
-    except (OSError, subprocess.SubprocessError):
+        from .memory import kernel32
+    except Exception:
         return None
-    return int(out[0]) if out else None
+    try:
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            size = ctypes.c_uint32(32768)
+            buf = ctypes.create_unicode_buffer(size.value)
+            ok = kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+            return buf.value if ok else None
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
 
 
 def proc_exe(pid: int):
+    if IS_WINDOWS:
+        return _query_exe_windows(pid)
     try:
         return os.readlink(f"/proc/{pid}/exe")
     except OSError:
@@ -39,22 +75,35 @@ def proc_exe(pid: int):
 
 
 def proc_cwd(pid: int):
+    if IS_WINDOWS:
+        # En Windows el cwd no es fiable / no accesible sin PEB; usar el dir del
+        # ejecutable (el cliente resuelve 'assets/' relativo a su instalacion).
+        exe = proc_exe(pid)
+        return os.path.dirname(exe) if exe else None
     try:
         return os.readlink(f"/proc/{pid}/cwd")
     except OSError:
         return None
 
 
-def detect_mydata(pid: int):
+def _mydata_candidates(exe, cwd):
     cands = []
-    exe = proc_exe(pid)
     if exe:
-        cands.append(os.path.join(os.path.dirname(exe), "mydata"))
-    cwd = proc_cwd(pid)
+        exe_dir = os.path.dirname(exe)
+        cands.append(os.path.join(exe_dir, "mydata"))
+        parent = os.path.dirname(exe_dir.rstrip("\\/"))
+        if parent:
+            cands.append(os.path.join(parent, "mydata"))
     if cwd:
         cands.append(os.path.join(cwd, "mydata"))
-    for c in cands:
-        if os.path.isdir(c):
+    return cands
+
+
+def detect_mydata(pid: int):
+    exe = proc_exe(pid)
+    cwd = proc_cwd(pid)
+    for c in _mydata_candidates(exe, cwd):
+        if c and os.path.isdir(c):
             return c
     return None
 
@@ -62,9 +111,12 @@ def detect_mydata(pid: int):
 def rebase(path: str, old_base, new_base: str) -> str:
     if not path:
         return path
-    if old_base and path.startswith(old_base):
-        return new_base + path[len(old_base):]
-    return os.path.join(new_base, os.path.basename(path))
+    norm = path.replace("\\", "/")
+    if old_base:
+        old = old_base.replace("\\", "/")
+        if norm.startswith(old):
+            return (new_base + norm[len(old):]).replace("\\", "/")
+    return os.path.join(new_base, os.path.basename(norm)).replace("\\", "/")
 
 
 def update_config(cfg_path: str, new_base: str, exe=None) -> dict:
@@ -87,14 +139,34 @@ def update_config(cfg_path: str, new_base: str, exe=None) -> dict:
 
 
 def update_agent_dir(agent_path: str, new_base: str) -> str:
+    # Barras normales: Lua 5.1 no admite '\U' etc. en literales de cadena.
+    forward = new_base.replace("\\", "/")
     with open(agent_path, encoding="utf-8") as fh:
         text = fh.read()
-    return re.sub(r'^local DIR = ".*"', f'local DIR = "{new_base}"',
-                  text, count=1, flags=re.M)
+    return _AGENT_DIR_RE.sub(f'local DIR = _G.PXG_DIR or "{forward}"', text, count=1)
 
 
-def install_agent(pid: int, agent_path: str = AGENT):
-    """Inyecta el agente via gdb. Devuelve (ok, salida)."""
+def install_agent(pid: int, agent_path: str = AGENT, mydata: str = None):
+    """Inyecta el agente. Devuelve (ok, salida).
+
+    Windows -> DLL (`inject_windows.py`); Linux -> gdb.
+    """
+    if IS_WINDOWS:
+        if not os.path.isfile(DLL):
+            return False, (
+                f"falta la DLL {DLL}; compilala con tools/agent_loader/build_windows.bat "
+                f"(o mingw32-make) antes de inyectar"
+            )
+        cmd = [sys.executable, INJECT_WINDOWS, "--pid", str(pid),
+               "--dll", DLL, "--agent", agent_path]
+        if mydata:
+            cmd += ["--dir", mydata]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, str(exc)
+        ok = "inyectado" in res.stdout.lower() or "ok" in res.stdout.lower()
+        return ok, (res.stdout + res.stderr).strip()
     try:
         res = subprocess.run(
             [sys.executable, INSTALL, "--pid", str(pid), "--agent", agent_path],
@@ -105,9 +177,10 @@ def install_agent(pid: int, agent_path: str = AGENT):
     return ok, res.stdout.strip()
 
 
-def attach(cfg_path: str, process_name: str = "pxgme-linux", pid=None,
+def attach(cfg_path: str, process_name: str = None, pid=None,
            agent_path: str = AGENT, install: bool = True, write: bool = True) -> dict:
     """Detecta el cliente, ajusta rutas y (opcionalmente) inyecta el agente."""
+    process_name = process_name or DEFAULT_PROCESS
     pid = pid or find_pid(process_name)
     if pid is None:
         return {"ok": False, "error": f"proceso '{process_name}' no encontrado"}
@@ -127,7 +200,7 @@ def attach(cfg_path: str, process_name: str = "pxgme-linux", pid=None,
             fh.write(new_agent)
         result["process_name"] = cfg.get("process_name")
     if install:
-        ok, out = install_agent(pid, agent_path)
+        ok, out = install_agent(pid, agent_path, mydata=new_base)
         result["installed"] = ok
         result["install_output"] = out
     return result

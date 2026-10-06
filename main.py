@@ -39,7 +39,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         bridge = LuaBridge(cfg.get("lua", {}))
         if not bridge.fresh(5.0):
-            print("aviso: el estado Lua no se actualiza; instala el agente (tools/install_agent.py)", file=sys.stderr)
+            print("aviso: el estado Lua no se actualiza; instala el agente "
+                  "(tools/install_agent.py en Linux / tools/inject_windows.py en Windows)",
+                  file=sys.stderr)
         source = LuaStateSource(bridge)
         inp = LuaInput(bridge)
     else:

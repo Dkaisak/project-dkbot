@@ -480,8 +480,17 @@ sobreescribe. La GUI edita `config.json` y el canal de control
 
 - `install_agent.py`: **instala/recarga el agente Lua** en el cliente vía gdb
   (`luaL_loadfile`+`lua_pcall`). **Obligatorio tras cada reinicio del cliente.**
+  (Linux.)
+- `inject_windows.py`: inyector del agente en **Windows** (escribe la config de la
+  DLL y hace `LoadLibraryW` remoto). Equivalente Windows de `install_agent.py`.
+- `recon_windows.py`: reconocimiento del cliente Windows (arquitectura, módulos,
+  exports, `mydata`; decide DLL vs firmas). Solo lectura.
+- `derive_signatures.py` + `pe_xref.py`: derivan/localizan las funciones de LuaJIT
+  dentro de `pxgme.exe` usando `pxgme-linux` (con símbolos) como oráculo.
+- `agent_loader/`: la **DLL** (`pxg_agent_loader.c` + `signatures.h`), scripts de
+  build y `NOTES.md` con el método y los hallazgos.
 - `lua_probe.py`: ejecuta un chunk Lua dentro del cliente y lee `_G.PXG_DUMP`
-  (diagnóstico).
+  (diagnóstico; Linux/gdb).
 - `pxg_agent.lua`: el agente (estado + comandos + navegación).
 - `record_route.py`, `e2e_test.py`, `test_behaviors.py`, `fake_client.py`,
   `find_by_name.py`, `pxg_recon.py`: apoyo (grabar rutas, tests de behaviors,
@@ -507,7 +516,8 @@ sobreescribe. La GUI edita `config.json` y el canal de control
 pip install -r requirements.txt
 
 # Instalar/recargar el agente en el cliente (tras cada reinicio del cliente)
-python3 tools/install_agent.py
+python3 tools/install_agent.py          # Linux (gdb)
+python  tools/inject_windows.py         # Windows (DLL) — ver abajo
 
 # Arrancar el bot (AFK)
 python3 main.py run --verbose
@@ -517,6 +527,20 @@ python3 main.py gui --no-open
 # -> http://192.168.1.52:8765
 ```
 
+En **Windows** (resumen; detalle en `tools/agent_loader/README.md`):
+
+```bat
+:: 1) compila la DLL (MinGW/Zig/MSVC)
+tools\agent_loader\build_windows.bat
+
+:: 2) con pxgme.exe abierto, inyecta el agente
+python tools\inject_windows.py --dll tools\agent_loader\pxg_agent_loader.dll
+:: o:  python tools\setup_client.py --install   (detecta mydata y el agente)
+
+:: 3) arranca todo
+run_windows.bat
+```
+
 Otros subcomandos: `scan`, `pointer`, `dump`, `procs`.
 
 ---
@@ -524,7 +548,7 @@ Otros subcomandos: `scan`, `pointer`, `dump`, `procs`.
 ## 19. Notas y limitaciones
 
 - **El agente se pierde al reiniciar el cliente**: hay que reinstalarlo
-  (`tools/install_agent.py`).
+  (`tools/install_agent.py` en Linux / `tools/inject_windows.py` en Windows).
 - **Todo es 100% Lua**: movimiento, clics, **`order`** y **`revive`** no usan
   X11. `pxg_bot/cursor.py` (XTest / `SetCursorPos`) queda como utilidad.
 - El cliente usa **LuaJIT (Lua 5.1)**: evitar sintaxis de Lua 5.4 en el agente
@@ -541,8 +565,7 @@ Otros subcomandos: `scan`, `pointer`, `dump`, `procs`.
 
 ## 20. Multiplataforma (Linux / Windows)
 
-El bot es Python puro + stdlib, así que corre en ambas plataformas. El port a
-Windows ya tiene soporte parcial:
+El bot es Python puro + stdlib, así que corre en ambas plataformas.
 
 - **Memoria**: `pxg_bot/memory.py` incluye `WindowsProcess`
   (`OpenProcess`/`ReadProcessMemory`).
@@ -550,8 +573,20 @@ Windows ya tiene soporte parcial:
   `PostMessage`); `create_input` lo usa en Windows.
 - **Cursor** (utilidad, ya no en el flujo normal): `pxg_bot/cursor.py` (XTest en
   Linux / `SetCursorPos` en Windows).
+- **Inyección del agente**:
+  - Linux: `tools/install_agent.py` (gdb; `break lua_gettop`).
+  - Windows: **`tools/agent_loader/pxg_agent_loader.dll`** inyectada con
+    `tools/inject_windows.py` (`CreateRemoteThread`+`LoadLibraryW`). La DLL
+    localiza `lua_gettop`/`luaL_loadbuffer`/`lua_pcall` en `pxgme.exe` por firma
+    (el cliente va stripped y con LuaJIT estático), captura el `lua_State` con un
+    hook inline y ejecuta el agente. Ver `tools/agent_loader/NOTES.md`.
+- **Config/rutas**: `pxg_bot/config.py` deriva las rutas de `mydata` según
+  plataforma y `process_name` es `pxgme.exe`/`pxgme-linux`. `tools/setup_client.py`
+  (attach) y la GUI detectan el `mydata` real y reescriben `config.json`.
+- **Empaquetado**: `build_exe.bat` (PyInstaller) y `run_windows.bat` (inyecta +
+  arranca la GUI). La DLL y el `.lua` van como datos.
 
-Pendiente para una build Windows: el **inyector del agente** (hoy
-`tools/install_agent.py` usa gdb, Linux-only), hacer configurable la ruta del
-agente y los paths del `config.json`/`config.py`, y el empaquetado (PyInstaller).
-Ver §8/§16.
+Nota sobre el cliente Windows: carga los scripts como `.klua` **cifrado**
+(`assets/init.klua`, módulos `.klmod`), y solo cae a `assets/init.lua` si
+`init.klua` falla; por eso la inyección va por DLL, no por fichero. Detalle y
+método de derivación de firmas en `tools/agent_loader/NOTES.md`.

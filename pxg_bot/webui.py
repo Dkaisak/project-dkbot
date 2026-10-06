@@ -107,7 +107,7 @@ class Dashboard:
         from . import setup
 
         with self.lock:
-            process = self.cfg.get("process_name", "pxgme-linux")
+            process = self.cfg.get("process_name") or setup.DEFAULT_PROCESS
             res = setup.attach(self.cfg_path, process_name=process, install=True)
             if res.get("ok"):
                 self._apply_cfg(load_config(self.cfg_path))

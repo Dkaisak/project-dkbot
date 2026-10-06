@@ -1,5 +1,8 @@
 -- Agente Lua PXG v3: estado + comandos. Cancela su tick anterior al reejecutarse.
-local DIR = "/home/dkaisak/Descargas/pxg-linux/mydata"
+-- `PXG_DIR` lo inyecta el loader (DLL en Windows / attach en Linux). Usar
+-- SIEMPRE barras normales: Lua 5.1 trata `\U`, `\P`... como escapes invalidos.
+local DIR = _G.PXG_DIR or "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata"
+DIR = DIR:gsub("\\", "/")
 local STATE = DIR .. "/pxg_bot_state.json"
 local CMD = DIR .. "/pxg_bot_cmd.txt"
 
@@ -68,7 +71,11 @@ local function readCmd()
   -- asi no se pierde ninguna orden.
   local tmp = CMD .. ".tmp"
   local drained = false
-  if os and os.rename then drained = os.rename(CMD, tmp) end
+  if os and os.rename then
+    -- En Windows el rename falla si el destino ya existe: borrarlo antes.
+    pcall(function() os.remove(tmp) end)
+    drained = os.rename(CMD, tmp)
+  end
   local path = drained and tmp or CMD
   local f = io.open(path, "r")
   if not f then return nil end

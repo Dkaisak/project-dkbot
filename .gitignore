@@ -3,3 +3,17 @@ __pycache__/
 *.log
 .venv/
 venv/
+
+# Build artifacts (la DLL se regenera con tools/agent_loader/build_windows.bat)
+*.dll
+*.o
+*.obj
+*.exp
+*.lib
+*.pdb
+dist/
+build/
+*.spec
+tools/agent_loader/pxg_agent_dll.json
+tools/agent_loader/recon_windows.json
+tools/agent_loader/lua_offsets.json

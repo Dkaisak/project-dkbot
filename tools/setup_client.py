@@ -23,7 +23,7 @@ from pxg_bot import setup
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=os.path.join(ROOT, "config.json"))
-    ap.add_argument("--process", default="pxgme-linux")
+    ap.add_argument("--process", default=setup.DEFAULT_PROCESS)
     ap.add_argument("--pid", type=int, default=None)
     ap.add_argument("--agent", default=setup.AGENT)
     ap.add_argument("--install", action="store_true", help="inyecta el agente al terminar")

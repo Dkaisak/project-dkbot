@@ -1,6 +1,6 @@
 {
-  "process_name": "pxgme-linux",
-  "module_name": "pxgme-linux",
+  "process_name": "pxgme.exe",
+  "module_name": "pxgme.exe",
   "_doc": {
     "offsets.player_base": "Punto de entrada al struct del jugador. mode=static usa 'address' (direccion absoluta donde vive el puntero); mode=signature escanea 'signature' en 'module'. 'rip_relative' usa operand_offset como rel32. 'chain' es una lista de offsets puntero-a-puntero; 'deref' son desreferencias extra al final.",
     "offsets.player.fields": "Offsets de cada campo respecto al struct del jugador. type: i32/u32/u16/u8/f32/f64/bool/str/str_utf16.",
@@ -257,13 +257,13 @@
     }
   },
   "lua": {
-    "state_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_state.json",
-    "cmd_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_cmd.txt",
-    "control_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_control.json",
-    "status_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_status.json",
-    "minimap_file": "/home/dkaisak/Descargas/pxg-linux/mydata/minimap.otmm",
-    "shiny_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_shiny.json",
-    "routes_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_routes.json",
+    "state_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_state.json",
+    "cmd_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_cmd.txt",
+    "control_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_control.json",
+    "status_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_status.json",
+    "minimap_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/minimap.otmm",
+    "shiny_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_shiny.json",
+    "routes_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_routes.json",
     "direction_map": {
       "0": 0,
       "1": 4,
@@ -274,14 +274,14 @@
       "6": 3,
       "7": 7
     },
-    "pokemon_skills_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_pokemon_skills.json",
-    "ignore_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_ignore.json"
+    "pokemon_skills_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_pokemon_skills.json",
+    "ignore_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_ignore.json"
   },
   "ui": {
     "port": 8765,
-    "host": "192.168.1.52",
+    "host": "127.0.0.1",
     "auto_open": true,
-    "log_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot.log"
+    "log_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot.log"
   },
   "behaviors": {
     "crisis": {
@@ -309,7 +309,7 @@
       "catch_all": false,
       "shiny_only": true,
       "hp_threshold": 30,
-      "range": 1,
+      "range": 4,
       "ball_key": "F4",
       "ball_item": 2652,
       "interval": 0.0,
@@ -335,7 +335,7 @@
         "9"
       ],
       "ready_pct": 100,
-      "cooldown": 0.0,
+      "cooldown": 0.3,
       "skill_repeat_guard": 0.3,
       "retarget_interval": 0.25,
       "target_switch_secs": 4.0,
@@ -359,15 +359,17 @@
       "loot_seconds": 15.0,
       "lure_aoe": true,
       "lure_visible_min": 5,
-      "lure_enter_min": 2,
-      "lure_light_wait": 1.5,
+      "lure_gather_timeout": 10.0,
       "lure_use_single": false,
-      "lure_attack_range": 3,
+      "hold_timeout": 15.0,
+      "fight_recover_secs": 1.5,
+      "resume_pause_secs": 1.0,
       "lure_summon": true,
       "lure_summon_radius": 3,
+      "summon_arrive_tolerance": 1,
+      "summon_grace_secs": 3.0,
       "buff_on_screen": true,
       "buff_visible_min": 3,
-      "lure_wait_timeout": 20.0,
       "aoe_priority": [
         "Air Vortex"
       ],
@@ -404,6 +406,7 @@
       "detour": false,
       "densify": true,
       "start_idle_random": false,
+      "start_idle_enabled": true,
       "seg_recalc_dist": 2
     },
     "explore": {
@@ -431,6 +434,7 @@
       "urgent_click_delay": 0.05,
       "urgent_verify_delay": 0.25,
       "urgent_withdraw_wait": 0.25,
+      "revive_retry_secs": 3.0,
       "stun_secs": 2.5,
       "fast_min_interval_secs": 0.6,
       "stun_min_interval_secs": 0.6,

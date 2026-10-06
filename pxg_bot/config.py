@@ -2,7 +2,50 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import sys
 from typing import Optional
+
+IS_WINDOWS = sys.platform == "win32"
+
+# Nombre del proceso del cliente según plataforma. En Windows el ejecutable es
+# pxgme.exe; en Linux el binario nativo pxgme-linux.
+DEFAULT_PROCESS = "pxgme.exe" if IS_WINDOWS else "pxgme-linux"
+
+
+def _default_mydata() -> str:
+    """Directorio `mydata` del cliente. Portable, sin rutas absolutas fijas.
+
+    Orden: variable de entorno PXG_MYDATA > heurística por plataforma. El botón
+    de la GUI / `tools/setup_client.py` (attach) lo detectan igualmente y
+    reescriben `config.json`.
+    """
+    env = os.environ.get("PXG_MYDATA")
+    if env:
+        return os.path.abspath(env)
+    if IS_WINDOWS:
+        local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(local, "Programs", "PokeXGames", "mydata")
+    return os.path.join(os.path.expanduser("~"), "pxg-linux", "mydata")
+
+
+DEFAULT_MYDATA = _default_mydata()
+
+
+def _lua_paths(base: str) -> dict:
+    return {
+        "state_file": os.path.join(base, "pxg_bot_state.json"),
+        "cmd_file": os.path.join(base, "pxg_bot_cmd.txt"),
+        "control_file": os.path.join(base, "pxg_control.json"),
+        "status_file": os.path.join(base, "pxg_bot_status.json"),
+        "minimap_file": os.path.join(base, "minimap.otmm"),
+        "shiny_file": os.path.join(base, "pxg_shiny.json"),
+        "pokemon_skills_file": os.path.join(base, "pxg_pokemon_skills.json"),
+        "ignore_file": os.path.join(base, "pxg_ignore.json"),
+        "routes_file": os.path.join(base, "pxg_routes.json"),
+        "direction_map": {"0": 0, "1": 4, "2": 1, "3": 5, "4": 2, "5": 6, "6": 3, "7": 7},
+    }
+
 
 DEFAULT_HUMANIZER = {
     "enabled": True,
@@ -14,9 +57,9 @@ DEFAULT_HUMANIZER = {
 
 DEFAULT_SETTINGS = {
     "tick_seconds": 0.1,
-    "state_source": "memory",
+    "state_source": "lua",
     "background_input": False,
-    "input_backend": "auto",
+    "input_backend": "lua",
     "window_name": None,
     "pointer_size": 8,
     "tile_size": 32,
@@ -33,24 +76,13 @@ DEFAULT_SETTINGS = {
     "humanizer": DEFAULT_HUMANIZER,
 }
 
-DEFAULT_LUA = {
-    "state_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_state.json",
-    "cmd_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_cmd.txt",
-    "control_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_control.json",
-    "status_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_status.json",
-    "minimap_file": "/home/dkaisak/Descargas/pxg-linux/mydata/minimap.otmm",
-    "shiny_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_shiny.json",
-    "pokemon_skills_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_pokemon_skills.json",
-    "ignore_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_ignore.json",
-    "routes_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_routes.json",
-    "direction_map": {"0": 0, "1": 4, "2": 1, "3": 5, "4": 2, "5": 6, "6": 3, "7": 7},
-}
+DEFAULT_LUA = _lua_paths(DEFAULT_MYDATA)
 
 DEFAULT_UI = {
     "port": 8765,
     "host": "127.0.0.1",
     "auto_open": True,
-    "log_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot.log",
+    "log_file": os.path.join(DEFAULT_MYDATA, "pxg_bot.log"),
 }
 
 DEFAULT_BEHAVIORS = {
