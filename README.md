@@ -541,6 +541,19 @@ python tools\inject_windows.py --dll tools\agent_loader\pxg_agent_loader.dll
 run_windows.bat
 ```
 
+### Ejecutable (.exe) con la GUI web incluida
+
+```bat
+build_exe.bat
+:: genera:
+::   dist\dkbot.exe       -> consola (CLI: run/scan/... + GUI)
+::   dist\dkbot-gui.exe   -> sin consola (doble clic -> GUI web)
+```
+El `.exe` incluye la interfaz web (`pxg_bot/web`), el agente `.lua`, la DLL y
+`config.json`; al arrancar copia los ficheros escribibles (config, agente, DLL)
+junto al exe. `dist\dkbot.exe` sin subcomando arranca la GUI. Detalle de rutas
+"frozen" en `pxg_bot/paths.py`.
+
 Otros subcomandos: `scan`, `pointer`, `dump`, `procs`.
 
 ---
@@ -583,8 +596,12 @@ El bot es Python puro + stdlib, así que corre en ambas plataformas.
 - **Config/rutas**: `pxg_bot/config.py` deriva las rutas de `mydata` según
   plataforma y `process_name` es `pxgme.exe`/`pxgme-linux`. `tools/setup_client.py`
   (attach) y la GUI detectan el `mydata` real y reescriben `config.json`.
-- **Empaquetado**: `build_exe.bat` (PyInstaller) y `run_windows.bat` (inyecta +
-  arranca la GUI). La DLL y el `.lua` van como datos.
+- **Empaquetado**: `build_exe.bat` (PyInstaller) genera `dist\dkbot.exe` (consola,
+  CLI+GUI) y `dist\dkbot-gui.exe` (sin consola). La GUI web, el agente `.lua`, la
+  DLL y `config.json` van embebidos; `pxg_bot/paths.py` resuelve las rutas en
+  modo "frozen" (datos en el bundle, ficheros escribibles junto al exe) y la GUI
+  lanza el bot como subproceso del propio exe. `run_windows.bat` arranca la
+  versión "de repo" (inyecta + GUI).
 
 Nota sobre el cliente Windows: carga los scripts como `.klua` **cifrado**
 (`assets/init.klua`, módulos `.klmod`), y solo cae a `assets/init.lua` si

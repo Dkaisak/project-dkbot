@@ -16,10 +16,12 @@ import shutil
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from . import paths
+
+ROOT = paths.APP_DIR
 AGENT = os.path.join(ROOT, "tools", "pxg_agent.lua")
-INSTALL = os.path.join(ROOT, "tools", "install_agent.py")
-INJECT_WINDOWS = os.path.join(ROOT, "tools", "inject_windows.py")
+INSTALL = os.path.join(paths.BUNDLE_DIR, "tools", "install_agent.py")
+INJECT_WINDOWS = os.path.join(paths.BUNDLE_DIR, "tools", "inject_windows.py")
 DLL = os.path.join(ROOT, "tools", "agent_loader", "pxg_agent_loader.dll")
 
 IS_WINDOWS = sys.platform == "win32"
@@ -149,7 +151,7 @@ def update_agent_dir(agent_path: str, new_base: str) -> str:
 def install_agent(pid: int, agent_path: str = AGENT, mydata: str = None):
     """Inyecta el agente. Devuelve (ok, salida).
 
-    Windows -> DLL (`inject_windows.py`); Linux -> gdb.
+    Windows -> DLL (en proceso, `pxg_bot.inject`); Linux -> gdb.
     """
     if IS_WINDOWS:
         if not os.path.isfile(DLL):
@@ -157,16 +159,13 @@ def install_agent(pid: int, agent_path: str = AGENT, mydata: str = None):
                 f"falta la DLL {DLL}; compilala con tools/agent_loader/build_windows.bat "
                 f"(o mingw32-make) antes de inyectar"
             )
-        cmd = [sys.executable, INJECT_WINDOWS, "--pid", str(pid),
-               "--dll", DLL, "--agent", agent_path]
-        if mydata:
-            cmd += ["--dir", mydata]
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return False, str(exc)
-        ok = "inyectado" in res.stdout.lower() or "ok" in res.stdout.lower()
-        return ok, (res.stdout + res.stderr).strip()
+        from . import inject as inject_mod
+
+        res = inject_mod.inject_agent(pid, dll=DLL, agent=agent_path, mydata=mydata,
+                                      log=(os.path.join(mydata, "pxg_bot.log") if mydata else None),
+                                      suspend=True, verify=True)
+        ok = bool(res.get("ok"))
+        return ok, json.dumps(res, ensure_ascii=False)
     try:
         res = subprocess.run(
             [sys.executable, INSTALL, "--pid", str(pid), "--agent", agent_path],

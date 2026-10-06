@@ -257,13 +257,13 @@
     }
   },
   "lua": {
-    "state_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_state.json",
-    "cmd_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_cmd.txt",
-    "control_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_control.json",
-    "status_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_status.json",
-    "minimap_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/minimap.otmm",
-    "shiny_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_shiny.json",
-    "routes_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_routes.json",
+    "state_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_bot_state.json",
+    "cmd_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_bot_cmd.txt",
+    "control_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_control.json",
+    "status_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_bot_status.json",
+    "minimap_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/minimap.otmm",
+    "shiny_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_shiny.json",
+    "routes_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_routes.json",
     "direction_map": {
       "0": 0,
       "1": 4,
@@ -274,14 +274,14 @@
       "6": 3,
       "7": 7
     },
-    "pokemon_skills_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_pokemon_skills.json",
-    "ignore_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_ignore.json"
+    "pokemon_skills_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_pokemon_skills.json",
+    "ignore_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_ignore.json"
   },
   "ui": {
     "port": 8765,
     "host": "127.0.0.1",
     "auto_open": true,
-    "log_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot.log"
+    "log_file": "D:\\Users\\Dkaisak\\AppData\\Local\\Programs\\PokeXGames\\mydata/pxg_bot.log"
   },
   "behaviors": {
     "crisis": {

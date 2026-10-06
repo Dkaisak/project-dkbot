@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from pxg_bot import paths
 from pxg_bot.bot import Bot
 from pxg_bot.config import load_config
 from pxg_bot.input import create_input, MockInput
@@ -115,8 +116,8 @@ def cmd_gui(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pxg-bot", description="Bot AFK para clientes tipo Tibia (PokeXGames)")
-    parser.add_argument("--config", default="config.json")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--config", default=paths.default_config_path())
+    sub = parser.add_subparsers(dest="command", required=False)
 
     def add_target(sp):
         sp.add_argument("--process", default=None, help="nombre del ejecutable")
@@ -164,8 +165,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    paths.ensure_app_files()
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Sin subcomando (p. ej. doble clic en el .exe) -> arrancar la GUI web.
+    if getattr(args, "command", None) is None:
+        args.command = "gui"
+        args.func = cmd_gui
+        args.host = None
+        args.port = None
+        args.no_open = False
     try:
         return args.func(args)
     except KeyboardInterrupt:

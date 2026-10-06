@@ -21,10 +21,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import control as control_io
+from . import paths
 from .config import load_config, save_config
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+ROOT = paths.APP_DIR
+WEB_DIR = os.path.join(paths.BUNDLE_DIR, "pxg_bot", "web")
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -116,6 +117,21 @@ class Dashboard:
 
     # --- proceso del bot ---
     def _pid_alive(self, pid: int) -> bool:
+        if paths.IS_FROZEN or sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+                k = ctypes.WinDLL("kernel32", use_last_error=True)
+                k.OpenProcess.restype = wintypes.HANDLE
+                h = k.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+                if not h:
+                    return False
+                code = wintypes.DWORD()
+                ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+                k.CloseHandle(h)
+                return bool(ok) and code.value == 259  # STILL_ACTIVE
+            except Exception:
+                return False
         try:
             os.kill(pid, 0)
             return True
@@ -142,8 +158,11 @@ class Dashboard:
             if self._log_handle is None and self.log_file:
                 os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
                 self._log_handle = open(self.log_file, "ab", buffering=0)
-            cmd = [sys.executable, "-u", os.path.join(ROOT, "main.py"),
-                   "--config", self.cfg_path, "run", "--verbose"]
+            if paths.IS_FROZEN:
+                cmd = [sys.executable, "--config", self.cfg_path, "run", "--verbose"]
+            else:
+                cmd = [sys.executable, "-u", os.path.join(paths.BUNDLE_DIR, "main.py"),
+                       "--config", self.cfg_path, "run", "--verbose"]
             try:
                 self.proc = subprocess.Popen(
                     cmd, cwd=ROOT, stdout=self._log_handle, stderr=self._log_handle,
@@ -703,6 +722,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(cfg_path: str, host: str | None = None, port: int | None = None,
           open_browser: bool = True) -> int:
+    paths.ensure_app_files()
     app = Dashboard(cfg_path)
     if host:
         app.host = host
@@ -728,7 +748,7 @@ def main(argv=None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog="pxg-gui", description="GUI web local para el bot")
-    parser.add_argument("--config", default=os.path.join(ROOT, "config.json"))
+    parser.add_argument("--config", default=paths.default_config_path())
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--host", default=None)
     parser.add_argument("--open", action="store_true", help="abrir el navegador")
