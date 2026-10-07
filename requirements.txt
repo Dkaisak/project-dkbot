@@ -1,5 +1,14 @@
-# Windows: sin dependencias externas (stdlib + ctypes).
-# Linux (opcional, para input X11):
-#   - python-xlib   ->  pip install python-xlib      (preferido)
-#   - o xdotool     ->  apt install xdotool
+# El bot funciona solo con la stdlib (ctypes incluido).
+#
+# --- App de escritorio (opcional) ---
+#   pywebview  -> ventana nativa (usa WebView2 en Windows)
+#   pystray    -> icono de bandeja del sistema
+#   Pillow     -> icono (y tambien lo usa pystray)
+#   pip install pywebview pystray Pillow
+#
+# Sin estas dependencias, `main.py app` cae al modo navegador (`main.py gui`).
+#
+# --- Linux (opcional, input X11) ---
+#   python-xlib   ->  pip install python-xlib      (preferido)
+#   o xdotool     ->  apt install xdotool
 # Memoria en Linux usa /proc/<pid>/mem + ptrace (stdlib).

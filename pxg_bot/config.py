@@ -83,6 +83,11 @@ DEFAULT_UI = {
     "host": "127.0.0.1",
     "auto_open": True,
     "log_file": os.path.join(DEFAULT_MYDATA, "pxg_bot.log"),
+    "mode": "app",
+    "debug": False,
+    "icon": "tools/icon.ico",
+    "window": {"width": 1280, "height": 860, "title": "DKBot", "on_top": False},
+    "tray": {"enabled": True, "minimize_on_close": True},
 }
 
 DEFAULT_BEHAVIORS = {
@@ -146,6 +151,8 @@ DEFAULT_BEHAVIORS = {
         "buff_on_screen": True,
         "buff_visible_min": 3,
         "panic_hp": 25,
+        "panic_hp_source": "summon",
+        "panic_skills": "all",
         "pokestop_method": "func",
         "pokestop_talk": "!pokestop",
         "pokestop_key": "R",

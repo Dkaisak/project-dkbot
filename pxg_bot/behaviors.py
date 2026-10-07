@@ -549,9 +549,28 @@ class CombatBehavior(Behavior):
         return all(ref.distance(c.pos) <= rng for c in vis)
 
     def _panic(self, state: GameState) -> bool:
-        # vida baja de NUESTRO pokemon (ownsummon): lanzar todo sin esperar
-        hp = getattr(state, "pokemon_hp", None)
+        # vida baja: lanzar todo sin esperar (el origen del HP es configurable)
+        hp = self._panic_hp(state)
         return hp is not None and hp <= int(self.cfg.get("panic_hp", 25))
+
+    def _panic_hp(self, state: GameState):
+        """HP (%) que dispara el panico segun `panic_hp_source`:
+        - summon: HP del pokemon propio (ownsummon) [por defecto]
+        - active: HP del Pokemon activo de la party
+        - min:    el menor de ambos (mas conservador)
+        """
+        summon = getattr(state, "pokemon_hp", None)
+        active = None
+        act = state.active_pokemon() if hasattr(state, "active_pokemon") else None
+        if act is not None:
+            active = getattr(act, "hp_pct", None)
+        src = str(self.cfg.get("panic_hp_source", "summon")).lower()
+        if src == "active":
+            return active if active is not None else summon
+        if src == "min":
+            vals = [v for v in (summon, active) if v is not None]
+            return min(vals) if vals else None
+        return summon if summon is not None else active
 
     def _middle_click_empty(self, state: GameState, bb: Blackboard, inp) -> None:
         """Clic central en un tile vacio: indica al pokemon que puede moverse otra vez."""
@@ -728,10 +747,12 @@ class CombatBehavior(Behavior):
             return len(order) + len(prio)
 
         panic = self._panic(state)
+        panic_mode = str(s.get("panic_skills", "all")).lower() if panic else "all"
         use_single = bool(s.get("lure_use_single", True))
         lure_order = [str(k) for k in (getattr(state, "lure_order", []) or [])]
         by_key = {str(m.get("key", "")): m for m in state.moves}
-        if lure_order and not panic:
+        use_combo = bool(lure_order) and (not panic or panic_mode == "combo")
+        if use_combo:
             # combo propio del lure (GUI): exactamente esas skills, en ese orden
             pool = [k for k in lure_order if k in by_key and is_ready(by_key[k])]
         else:
@@ -740,6 +761,9 @@ class CombatBehavior(Behavior):
             ready_moves = []
             for m in state.moves:
                 if not is_ready(m):
+                    continue
+                if panic and panic_mode == "everything":
+                    ready_moves.append(m)   # en panico: TODAS (incl. buff/no-dano)
                     continue
                 effect = str(m.get("effect", ""))
                 if m.get("aoe"):

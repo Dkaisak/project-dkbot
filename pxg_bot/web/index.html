@@ -3,150 +3,284 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PXG Bot — Panel</title>
+  <title>DKBot — Panel</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <div class="topwrap">
   <header class="topbar">
     <div class="brand">
-      <span class="dot" id="conn"></span>
-      <strong>PXG Bot</strong>
-      <span class="muted" id="who">—</span>
+      <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="32" cy="32" r="29" fill="#f4f6fa" stroke="#15181e" stroke-width="4"/>
+        <path d="M3 32a29 29 0 0 1 58 0z" fill="#e5484d"/>
+        <rect x="3" y="28" width="58" height="8" fill="#15181e"/>
+        <circle cx="32" cy="32" r="11" fill="#15181e"/>
+        <circle cx="32" cy="32" r="6" fill="#f4f6fa"/>
+      </svg>
+      <div class="brandtext">
+        <strong>DKBot</strong>
+        <span class="muted small" id="who">—</span>
+      </div>
+      <span class="dot" id="conn" title="conexión con el cliente"></span>
     </div>
+
     <div class="statusline">
       <span class="chip" id="behavior">idle</span>
       <span class="chip" id="humanizer">—</span>
       <span class="chip" id="uptime">0s</span>
       <span class="chip" id="pid">detenido</span>
     </div>
+
     <div class="actions">
-      <button id="btn-attach" class="mini">Atachar cliente</button>
+      <button id="btn-attach" class="mini">Atachar</button>
       <button id="btn-start" class="primary">Iniciar</button>
       <button id="btn-stop" class="danger">Detener</button>
       <button id="btn-pause">Pausar</button>
-      <button id="btn-panic" class="danger">Pánico</button>
+      <button id="btn-panic" class="danger ghost">Pánico</button>
     </div>
   </header>
 
-  <main class="grid">
-    <section class="card span2">
-      <h3>Estado</h3>
-      <div class="row"><label>HP</label><div class="bar"><i id="hp-bar"></i><span id="hp-txt">0%</span></div></div>
-      <div class="row"><label>MP</label><div class="bar mp"><i id="mp-bar"></i><span id="mp-txt">0%</span></div></div>
-      <div class="kv">
-        <span>Pos <b id="pos">—</b></span>
-        <span>Nivel <b id="level">—</b></span>
-        <span>Enemigos <b id="enemies">0</b></span>
-        <span>Caminando <b id="walking">no</b></span>
+  <nav class="tabs">
+    <button class="tab active" data-tab="panel">Panel</button>
+    <button class="tab" data-tab="combate">Combate</button>
+    <button class="tab" data-tab="equipo">Equipo</button>
+    <button class="tab" data-tab="ruta">Ruta</button>
+    <button class="tab" data-tab="skills">Skills</button>
+    <button class="tab" data-tab="ignorar">Ignorar</button>
+    <button class="tab" data-tab="log">Registro</button>
+  </nav>
+  </div>
+
+  <main class="content">
+
+    <!-- ============ PANEL ============ -->
+    <section class="pane active" data-pane="panel">
+      <div class="grid">
+        <section class="card span2">
+          <h3>Estado del jugador</h3>
+          <div class="row"><label>HP</label><div class="bar"><i id="hp-bar"></i><span id="hp-txt">0%</span></div></div>
+          <div class="row"><label>MP</label><div class="bar mp"><i id="mp-bar"></i><span id="mp-txt">0%</span></div></div>
+          <div class="stats">
+            <div class="stat"><span class="k">Posición</span><b id="pos">—</b></div>
+            <div class="stat"><span class="k">Nivel</span><b id="level">—</b></div>
+            <div class="stat"><span class="k">Enemigos</span><b id="enemies">0</b></div>
+            <div class="stat"><span class="k">Caminando</span><b id="walking">no</b></div>
+          </div>
+          <div class="kv small">
+            <span>nav: <code id="nav">—</code></span>
+            <span>cmd: <code id="lastcmd">—</code></span>
+          </div>
+        </section>
+
+        <section class="card span2">
+          <h3>Contadores de sesión</h3>
+          <div class="muted small" id="counters">—</div>
+        </section>
+
+        <section class="card">
+          <h3>Comportamientos</h3>
+          <div id="behaviors" class="toggles"></div>
+        </section>
+
+        <section class="card">
+          <h3>Exploración</h3>
+          <div class="field"><label>Home</label>
+            <div class="inline">
+              <code id="home">—</code>
+              <button id="btn-home" class="mini">Fijar aquí</button>
+              <button id="btn-home-clear" class="mini ghost">Limpiar</button>
+            </div>
+          </div>
+          <div class="field"><label>Radio</label>
+            <input type="range" id="radius" min="10" max="200" step="5" value="60" />
+            <span id="radius-txt" class="muted">60</span>
+          </div>
+          <label class="switch"><input type="checkbox" id="patrol" /><span>Patrulla</span></label>
+          <label class="switch"><input type="checkbox" id="catchall" /><span>Lanzar ball a todos los derrotados</span></label>
+        </section>
+
+        <section class="card span2">
+          <h3>Skills rápidas <span class="muted small">(clic = lanzar)</span></h3>
+          <div id="skills" class="skills"></div>
+        </section>
       </div>
-      <div class="kv small">
-        <span>nav: <code id="nav">—</code></span>
-        <span>cmd: <code id="lastcmd">—</code></span>
+    </section>
+
+    <!-- ============ COMBATE ============ -->
+    <section class="pane" data-pane="combate">
+      <div class="grid">
+        <section class="card">
+          <h3>Lure / objetivo</h3>
+          <div class="field"><label>Lure min</label>
+            <input type="number" id="aoemin" class="mini" min="1" max="20" value="5" />
+            <span class="muted small">enemigos visibles para lurear</span></div>
+          <div class="field"><label>Lure tope</label>
+            <input type="number" id="lureto" class="mini" min="0" max="120" value="10" />
+            <span class="muted small">s juntando enemigos (0 = sin tope)</span></div>
+          <div class="field"><label>En rango</label>
+            <input type="number" id="inrmin" class="mini" min="1" max="20" value="2" />
+            <span class="muted small">a rango para castear</span></div>
+          <div class="field"><label>Rango ataque</label>
+            <input type="number" id="atkrange" class="mini" min="1" max="12" value="3" />
+            <span class="muted small">tiles del summon para pegar</span></div>
+          <div class="field"><label>Rango engage</label>
+            <input type="number" id="engrange" class="mini" min="0" max="30" value="0" />
+            <span class="muted small">radio de enemigos que cuentan (0 = pantalla)</span></div>
+        </section>
+
+        <section class="card">
+          <h3>Casteo</h3>
+          <div class="field"><label>Skill lista %</label>
+            <input type="number" id="readypct" class="mini" min="1" max="100" value="100" />
+            <span class="muted small">cooldown para considerar la skill lista</span></div>
+          <div class="field"><label>Skill cada</label>
+            <input type="number" id="skillcd" class="mini" min="0" max="3" step="0.05" value="0.3" />
+            <span class="muted small">s entre lanzamientos</span></div>
+          <label class="switch"><input type="checkbox" id="reqall" checked />
+            <span>Solo lanzar cuando todos estén a rango <span class="muted small">(salvo HP pánico)</span></span></label>
+        </section>
+
+        <section class="card">
+          <h3>Buff</h3>
+          <label class="switch"><input type="checkbox" id="buffon" checked />
+            <span>Lanzar buff con enemigos en pantalla</span></label>
+          <div class="field"><label>Enemigos min</label>
+            <input type="number" id="buffmin" class="mini" min="1" max="20" value="3" />
+            <span class="muted small">nº de enemigos visibles para usar el buff</span></div>
+          <div class="muted small">El buff es una skill con efecto <code>buff</code> (p. ej. nevermiss) y se lanza <b>una vez</b> mientras haya enemigos.</div>
+        </section>
+
+        <section class="card">
+          <h3>Pánico <span class="muted small">(vida baja: lanza ya, saltándose el gate)</span></h3>
+          <div class="field"><label>Umbral HP %</label>
+            <input type="number" id="panic" class="mini" min="1" max="100" value="25" />
+            <span class="muted small">se dispara con el HP a este % o menos</span></div>
+          <div class="field"><label>Origen del HP</label>
+            <select id="panic-src" class="mini">
+              <option value="summon">Summon (pokémon propio)</option>
+              <option value="active">Pokémon activo (party)</option>
+              <option value="min">El menor de ambos</option>
+            </select>
+            <span class="muted small">qué vida se vigila para el pánico</span></div>
+          <div class="field"><label>Skills en pánico</label>
+            <select id="panic-skills" class="mini">
+              <option value="all">AoE + daño simple</option>
+              <option value="everything">Todas (incl. buff / no-daño)</option>
+              <option value="combo">Solo el combo configurado</option>
+            </select>
+            <span class="muted small">qué lanza al entrar en pánico</span></div>
+        </section>
       </div>
-      <div class="muted small" id="counters">—</div>
     </section>
 
-    <section class="card">
-      <h3>Comportamientos</h3>
-      <div id="behaviors" class="toggles"></div>
-    </section>
-
-    <section class="card">
-      <h3>Exploración</h3>
-      <div class="row"><label>Home</label><code id="home">—</code>
-        <button id="btn-home" class="mini">Fijar aquí</button>
-        <button id="btn-home-clear" class="mini ghost">Limpiar</button>
+    <!-- ============ EQUIPO ============ -->
+    <section class="pane" data-pane="equipo">
+      <div class="grid">
+        <section class="card span2">
+          <h3>Pokémon de la ruta</h3>
+          <div class="field"><label>Ruta</label>
+            <select id="route-pokemon" class="mini"><option value="">(ninguno)</option></select>
+            <span class="muted small" id="route-pokemon-info">se saca al iniciar la ruta</span>
+          </div>
+          <div id="party" class="party"></div>
+        </section>
       </div>
-      <div class="row"><label>Radio</label>
-        <input type="range" id="radius" min="10" max="200" step="5" value="60" />
-        <span id="radius-txt" class="muted">60</span>
+    </section>
+
+    <!-- ============ RUTA ============ -->
+    <section class="pane" data-pane="ruta">
+      <div class="grid">
+        <section class="card span2">
+          <h3>Mapa <span class="muted small" id="mapinfo"></span></h3>
+          <div class="mapctrls">
+            <button id="m-follow" class="mini">Seguir</button>
+            <button id="m-mode" class="mini">Ver: color</button>
+            <button id="m-zoomin" class="mini">+</button>
+            <button id="m-zoomout" class="mini">−</button>
+            <span class="sep"></span>
+            <button id="m-edit" class="mini">Dibujar ruta</button>
+            <button id="m-undo" class="mini ghost">Deshacer</button>
+            <button id="m-clear" class="mini ghost">Limpiar</button>
+            <button id="m-save" class="mini primary">Guardar ruta</button>
+            <label class="inline"><input type="checkbox" id="m-loop" checked> loop</label>
+            <label class="inline"><input type="checkbox" id="m-pp"> ping-pong</label>
+          </div>
+          <div class="mapctrls">
+            <select id="m-routes" class="mini"></select>
+            <button id="m-load" class="mini">Cargar</button>
+            <button id="m-delete" class="mini ghost">Eliminar</button>
+            <span class="sep"></span>
+            <input id="m-route-name" class="mini" placeholder="nombre de ruta" />
+            <button id="m-saveas" class="mini primary">Guardar como</button>
+          </div>
+          <canvas id="map" width="1200" height="680"></canvas>
+          <div class="muted small" id="maproute">ruta: 0 waypoints</div>
+        </section>
+
+        <section class="card span2">
+          <h3>Idle de inicio</h3>
+          <label class="switch"><input type="checkbox" id="idleen" checked />
+            <span>Esperar al volver al waypoint 0</span></label>
+          <div class="field"><label>Segundos</label>
+            <input type="number" id="idlesecs" class="mini" min="0" max="600" value="42" />
+            <span class="muted small">espera al volver al waypoint 0 (primer loop)</span></div>
+        </section>
       </div>
-      <div class="row"><label>Patrulla</label><input type="checkbox" id="patrol" /></div>
-      <div class="row"><label>Ball a todos</label><input type="checkbox" id="catchall" />
-        <span class="muted small">derrotados</span></div>
-      <div class="row"><label>Lure min</label><input type="number" id="aoemin" class="mini" min="1" max="20" value="5" style="width:64px" />
-        <span class="muted small">visibles en pantalla para lurear</span></div>
-      <div class="row"><label>Lure tope</label><input type="number" id="lureto" class="mini" min="0" max="120" value="10" style="width:64px" />
-        <span class="muted small">s máximo juntando enemigos (0 = sin tope)</span></div>
-      <div class="row"><label>En rango</label><input type="number" id="inrmin" class="mini" min="1" max="20" value="2" style="width:64px" />
-        <span class="muted small">a rango para castear</span></div>
-      <div class="row"><label>Rango ataque</label><input type="number" id="atkrange" class="mini" min="1" max="12" value="3" style="width:64px" />
-        <span class="muted small">tiles del summon para pegar</span></div>
-      <div class="row"><label>Rango engage</label><input type="number" id="engrange" class="mini" min="0" max="30" value="0" style="width:64px" />
-        <span class="muted small">radio de enemigos que cuentan (0 = toda la pantalla)</span></div>
-      <div class="row"><label>HP pánico</label><input type="number" id="panic" class="mini" min="1" max="100" value="25" style="width:64px" />
-        <span class="muted small">% HP del poke para lanzar todas las skills</span></div>
-      <div class="row"><label>Skill lista %</label><input type="number" id="readypct" class="mini" min="1" max="100" value="100" style="width:64px" />
-        <span class="muted small">cooldown para considerar la skill lista</span></div>
-      <div class="row"><label>Skill cada</label><input type="number" id="skillcd" class="mini" min="0" max="3" step="0.05" value="0.3" style="width:64px" />
-        <span class="muted small">s entre lanzamientos de skills</span></div>
-      <div class="row"><label>Solo todos a rango</label><input type="checkbox" id="reqall" checked />
-        <span class="muted small">no lanzar hasta que TODOS los de pantalla estén a rango (salvo HP pánico)</span></div>
-      <div class="row"><label>Idle inicio</label><input type="checkbox" id="idleen" checked />
-        <input type="number" id="idlesecs" class="mini" min="0" max="600" value="42" style="width:64px" />
-        <span class="muted small">s de espera al volver al waypoint 0 (primer loop)</span></div>
     </section>
 
-    <section class="card">
-      <h3>Equipo</h3>
-      <div class="row"><label>Ruta</label>
-        <select id="route-pokemon" class="mini"><option value="">(ninguno)</option></select>
-        <span class="muted small" id="route-pokemon-info">se saca al iniciar la ruta</span>
+    <!-- ============ SKILLS ============ -->
+    <section class="pane" data-pane="skills">
+      <div class="grid">
+        <section class="card span2">
+          <h3>Skills / combo del lure <button id="psk-refresh" class="mini ghost right">refrescar Pokémon</button></h3>
+          <div class="muted small">Marca con ✔ las skills que se usarán en cada lure (en el orden de la lista) y pulsa <b>Guardar combo lure</b>. Sin ninguna marcada, el lure usa su lógica por defecto.</div>
+          <div id="psk" class="psk"></div>
+          <div id="psk-info" class="muted small"></div>
+        </section>
       </div>
-      <div id="party" class="party"></div>
     </section>
 
-    <section class="card span2">
-      <h3>Mapa <span class="muted small" id="mapinfo"></span></h3>
-      <div class="mapctrls">
-        <button id="m-follow" class="mini">Seguir</button>
-        <button id="m-mode" class="mini">Ver: color</button>
-        <button id="m-zoomin" class="mini">+</button>
-        <button id="m-zoomout" class="mini">−</button>
-        <span class="sep"></span>
-        <button id="m-edit" class="mini">Dibujar ruta</button>
-        <button id="m-undo" class="mini ghost">Deshacer</button>
-        <button id="m-clear" class="mini ghost">Limpiar</button>
-        <button id="m-save" class="mini primary">Guardar ruta</button>
-        <label class="inline"><input type="checkbox" id="m-loop" checked> loop</label>
-        <label class="inline"><input type="checkbox" id="m-pp"> ping-pong</label>
+    <!-- ============ IGNORAR ============ -->
+    <section class="pane" data-pane="ignorar">
+      <div class="grid">
+        <section class="card span2">
+          <h3>Ignorar criaturas <button id="ign-refresh" class="mini ghost right">refrescar</button></h3>
+          <div id="ign" class="psk"></div>
+          <div id="ign-info" class="muted small"></div>
+        </section>
       </div>
-      <div class="mapctrls">
-        <select id="m-routes" class="mini"></select>
-        <button id="m-load" class="mini">Cargar</button>
-        <button id="m-delete" class="mini ghost">Eliminar</button>
-        <span class="sep"></span>
-        <input id="m-route-name" class="mini" placeholder="nombre de ruta" />
-        <button id="m-saveas" class="mini primary">Guardar como</button>
+    </section>
+
+    <!-- ============ LOG ============ -->
+    <section class="pane" data-pane="log">
+      <div class="grid">
+        <section class="card span2">
+          <h3>Registro <button id="btn-log-clear" class="mini ghost right">auto-scroll</button></h3>
+          <pre id="log" class="log"></pre>
+        </section>
       </div>
-      <canvas id="map" width="1000" height="560"></canvas>
-      <div class="muted small" id="maproute">ruta: 0 waypoints</div>
     </section>
 
-    <section class="card span2">
-      <h3>Skills / combo del lure <button id="psk-refresh" class="mini ghost right">refrescar Pokémon</button></h3>
-      <div class="muted small">Marca con ✔ las skills que se usarán en cada lure (en el orden de la lista) y pulsa <b>Guardar combo lure</b>. Sin ninguna marcada, el lure usa su lógica por defecto.</div>
-      <div id="psk" class="psk"></div>
-      <div id="psk-info" class="muted small"></div>
-    </section>
-
-    <section class="card span2">
-      <h3>Ignorar criaturas <button id="ign-refresh" class="mini ghost right">refrescar</button></h3>
-      <div id="ign" class="psk"></div>
-      <div id="ign-info" class="muted small"></div>
-    </section>
-
-    <section class="card span2">
-      <h3>Skills <span class="muted small">(rápidas)</span></h3>
-      <div id="skills" class="skills"></div>
-    </section>
-
-    <section class="card span2">
-      <h3>Log <button id="btn-log-clear" class="mini ghost right">auto-scroll</button></h3>
-      <pre id="log" class="log"></pre>
-    </section>
   </main>
 
   <script src="/app.js"></script>
+  <script>
+    (function () {
+      const tabs = Array.from(document.querySelectorAll(".tabs .tab"));
+      const panes = Array.from(document.querySelectorAll(".pane"));
+      function show(name) {
+        tabs.forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+        panes.forEach((p) => p.classList.toggle("active", p.dataset.pane === name));
+        try { localStorage.setItem("dkbotTab", name); } catch (e) {}
+        try { history.replaceState(null, "", "#" + name); } catch (e) {}
+        window.dispatchEvent(new Event("resize"));
+      }
+      tabs.forEach((t) => t.addEventListener("click", () => show(t.dataset.tab)));
+      let saved = (location.hash || "").replace("#", "");
+      if (!saved) { try { saved = localStorage.getItem("dkbotTab") || "panel"; } catch (e) { saved = "panel"; } }
+      if (!panes.some((p) => p.dataset.pane === saved)) saved = "panel";
+      show(saved);
+    })();
+  </script>
 </body>
 </html>

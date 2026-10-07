@@ -23,8 +23,8 @@ if errorlevel 1 echo [!] La inyeccion fallo (revisa el log). El bot puede no fun
 
 if /I "%~1"=="--no-gui" goto done
 
-echo [*] Arrancando la GUI web...
-python main.py gui --no-open
+echo [*] Arrancando la app de escritorio...
+python main.py app
 goto done
 
 :err

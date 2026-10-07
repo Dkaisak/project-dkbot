@@ -571,6 +571,71 @@ def test_gate_strict_requires_all_in_range() -> None:
     print("OK gate: estricto (todos a rango) salvo HP panico")
 
 
+def test_panic_source_and_skills() -> None:
+    """Panico configurable: origen del HP (summon/activo/min) y que lanza."""
+    def build():
+        st = make_state()
+        st.pokemon_pos = (100, 100, 7)
+        st.attacking_name = "E1"
+        st.moves = [
+            {"key": "7", "aoe": True, "effect": "damage/debuff", "pct": 100, "name": "Air Vortex"},
+            {"key": "1", "aoe": False, "effect": "damage", "pct": 100, "name": "Peck"},
+            {"key": "9", "aoe": False, "effect": "buff/nevermiss", "pct": 100, "name": "Confide"},
+        ]
+        st.creatures = [
+            Creature(cid=1, name="E1", pos=Vec3(101, 100, 7), hp_pct=100,
+                     kind=CreatureKind.MONSTER, is_wild=True),
+            Creature(cid=2, name="E2", pos=Vec3(108, 100, 7), hp_pct=100,
+                     kind=CreatureKind.MONSTER, is_wild=True),
+        ]
+        return st
+
+    base = {"lure_aoe": True, "ready_pct": 100, "cooldown": 0.0, "attack_range": 3,
+            "engage_radius": 0, "require_all_close": True, "panic_hp": 25}
+
+    # origen = summon: summon sano -> NO panico -> el gate estricto bloquea (E2 lejos)
+    st = build(); st.pokemon_hp = 100; st.party = [Pokemon(slot=1, name="P", hp_pct=10, active=True)]
+    cb = CombatBehavior({**base, "panic_hp_source": "summon"}, {})
+    inp = RecInput(); cb._aoe_fight(st, Blackboard(), inp, st.creatures)
+    assert inp.skills == [], f"summon sano no debe entrar en panico: {inp.skills}"
+
+    # origen = active: el activo esta a 10 -> panico -> lanza saltando el gate
+    cb = CombatBehavior({**base, "panic_hp_source": "active"}, {})
+    inp = RecInput(); cb._aoe_fight(st, Blackboard(), inp, st.creatures)
+    assert inp.skills == ["7"], f"activo bajo debe disparar panico: {inp.skills}"
+
+    # origen = min -> tambien dispara
+    cb = CombatBehavior({**base, "panic_hp_source": "min"}, {})
+    inp = RecInput(); cb._aoe_fight(st, Blackboard(), inp, st.creatures)
+    assert inp.skills == ["7"], f"min debe disparar panico: {inp.skills}"
+
+    # skills = all (por defecto): AoE + dano simple, sin buff
+    st.pokemon_hp = 5; st.party = []
+    cb = CombatBehavior({**base, "panic_skills": "all"}, {})
+    inp = RecInput(); bb = Blackboard()
+    cb._aoe_fight(st, bb, inp, st.creatures); cb._aoe_fight(st, bb, inp, st.creatures)
+    cb._aoe_fight(st, bb, inp, st.creatures)
+    assert inp.skills == ["7", "1"], f"'all' no debe lanzar buff: {inp.skills}"
+
+    # skills = everything: incluye buff / no-dano
+    cb = CombatBehavior({**base, "panic_skills": "everything"}, {})
+    inp = RecInput(); bb = Blackboard()
+    cb._aoe_fight(st, bb, inp, st.creatures); cb._aoe_fight(st, bb, inp, st.creatures)
+    cb._aoe_fight(st, bb, inp, st.creatures)
+    assert inp.skills == ["7", "1", "9"], f"'everything' debe incluir buff: {inp.skills}"
+
+    # skills = combo: en panico respeta el combo configurado
+    st.lure_order = ["1"]
+    cb = CombatBehavior({**base, "panic_skills": "combo"}, {})
+    inp = RecInput(); cb._aoe_fight(st, Blackboard(), inp, st.creatures)
+    assert inp.skills == ["1"], f"'combo' debe lanzar solo el combo: {inp.skills}"
+    # y sin 'combo', el panico ignora el combo (usa AoE + dano)
+    cb = CombatBehavior({**base, "panic_skills": "all"}, {})
+    inp = RecInput(); cb._aoe_fight(st, Blackboard(), inp, st.creatures)
+    assert inp.skills == ["7"], f"'all' ignora el combo en panico: {inp.skills}"
+    print("OK panico: origen de HP (summon/active/min) y skills (all/everything/combo)")
+
+
 def test_aoe_cast_order_respects_combo() -> None:
     bb = Blackboard()
     st = make_state()
@@ -1002,6 +1067,7 @@ def main() -> int:
     test_revive_no_double_after_lag()
     test_gate_ignores_far_enemy()
     test_gate_strict_requires_all_in_range()
+    test_panic_source_and_skills()
     test_aoe_cast_order_respects_combo()
     test_shiny_observe()
     test_crisis_disabled()

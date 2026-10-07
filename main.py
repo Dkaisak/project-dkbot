@@ -114,6 +114,12 @@ def cmd_gui(args: argparse.Namespace) -> int:
     return serve(args.config, host=args.host, port=args.port, open_browser=auto_open)
 
 
+def cmd_app(args: argparse.Namespace) -> int:
+    from pxg_bot.app import run
+
+    return run(args.config, host=args.host, port=args.port)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pxg-bot", description="Bot AFK para clientes tipo Tibia (PokeXGames)")
     parser.add_argument("--config", default=paths.default_config_path())
@@ -155,11 +161,16 @@ def build_parser() -> argparse.ArgumentParser:
     procs.add_argument("name", nargs="?", default=None)
     procs.set_defaults(func=cmd_procs)
 
-    gui = sub.add_parser("gui", help="interfaz grafica web del bot")
+    gui = sub.add_parser("gui", help="interfaz grafica web del bot (navegador)")
     gui.add_argument("--port", type=int, default=None)
     gui.add_argument("--host", default=None)
     gui.add_argument("--no-open", action="store_true", help="no abrir el navegador automaticamente")
     gui.set_defaults(func=cmd_gui)
+
+    app = sub.add_parser("app", help="aplicacion de escritorio (ventana nativa)")
+    app.add_argument("--port", type=int, default=None)
+    app.add_argument("--host", default=None)
+    app.set_defaults(func=cmd_app)
 
     return parser
 
@@ -168,13 +179,12 @@ def main(argv=None) -> int:
     paths.ensure_app_files()
     parser = build_parser()
     args = parser.parse_args(argv)
-    # Sin subcomando (p. ej. doble clic en el .exe) -> arrancar la GUI web.
+    # Sin subcomando (p. ej. doble clic en el .exe) -> app de escritorio.
     if getattr(args, "command", None) is None:
-        args.command = "gui"
-        args.func = cmd_gui
+        args.command = "app"
+        args.func = cmd_app
         args.host = None
         args.port = None
-        args.no_open = False
     try:
         return args.func(args)
     except KeyboardInterrupt:

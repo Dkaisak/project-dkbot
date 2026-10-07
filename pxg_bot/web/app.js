@@ -207,6 +207,14 @@ function renderState(s) {
   if (document.activeElement !== engrange && combat.engage_radius != null) engrange.value = combat.engage_radius;
   const panic = document.getElementById("panic");
   if (document.activeElement !== panic && combat.panic_hp != null) panic.value = combat.panic_hp;
+  const panicSrc = document.getElementById("panic-src");
+  if (panicSrc && document.activeElement !== panicSrc && combat.panic_hp_source != null) panicSrc.value = combat.panic_hp_source;
+  const panicSkills = document.getElementById("panic-skills");
+  if (panicSkills && document.activeElement !== panicSkills && combat.panic_skills != null) panicSkills.value = combat.panic_skills;
+  const buffon = document.getElementById("buffon");
+  if (buffon && document.activeElement !== buffon && combat.buff_on_screen != null) buffon.checked = !!combat.buff_on_screen;
+  const buffmin = document.getElementById("buffmin");
+  if (buffmin && document.activeElement !== buffmin && combat.buff_visible_min != null) buffmin.value = combat.buff_visible_min;
   const readypct = document.getElementById("readypct");
   if (document.activeElement !== readypct && combat.ready_pct != null) readypct.value = combat.ready_pct;
   const skillcd = document.getElementById("skillcd");
@@ -724,6 +732,16 @@ function wire() {
   document.getElementById("panic").onchange = (e) => {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { panic_hp: n } });
+  };
+  document.getElementById("panic-src").onchange = (e) =>
+    api("/api/control", "POST", { combat: { panic_hp_source: e.target.value } });
+  document.getElementById("panic-skills").onchange = (e) =>
+    api("/api/control", "POST", { combat: { panic_skills: e.target.value } });
+  document.getElementById("buffon").onchange = (e) =>
+    api("/api/control", "POST", { combat: { buff_on_screen: e.target.checked } });
+  document.getElementById("buffmin").onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { combat: { buff_visible_min: n } });
   };
   document.getElementById("readypct").onchange = (e) => {
     const n = parseInt(e.target.value, 10);

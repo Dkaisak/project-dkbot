@@ -1,8 +1,9 @@
 @echo off
 rem build_exe.bat - empaqueta dkbot con PyInstaller (Windows).
-rem   dist\dkbot.exe      -> consola (CLI + GUI web)
-rem   dist\dkbot-gui.exe  -> sin consola (doble clic -> GUI web)
-rem Incluye la interfaz web (pxg_bot/web), el agente .lua, la DLL y config.json.
+rem   dist\dkbot.exe      -> consola (CLI + app de escritorio / GUI web)
+rem   dist\dkbot-gui.exe  -> sin consola (doble clic -> app de escritorio)
+rem Incluye la interfaz web (pxg_bot/web), el agente .lua, la DLL, el icono y
+rem config.json. Empaqueta pywebview/pystray/Pillow para la ventana nativa.
 rem Uso:  build_exe.bat
 setlocal
 cd /d "%~dp0"
@@ -13,25 +14,27 @@ if errorlevel 1 (
   python -m pip install pyinstaller
 )
 
-echo [*] Empaquetando dkbot.exe (consola)...
-python -m PyInstaller --noconfirm --clean --onefile --name dkbot --console ^
+set COMMON=--noconfirm --clean --onefile ^
+  --collect-all webview ^
+  --hidden-import webview.platforms.winforms ^
+  --hidden-import pystray._win32 ^
+  --icon tools/icon.ico ^
   --add-data "pxg_bot/web;pxg_bot/web" ^
   --add-data "tools/pxg_agent.lua;tools" ^
   --add-data "tools/agent_loader/pxg_agent_loader.dll;tools/agent_loader" ^
-  --add-data "config.json;." ^
-  main.py
+  --add-data "tools/icon.ico;tools" ^
+  --add-data "tools/icon.png;tools" ^
+  --add-data "config.json;."
+
+echo [*] Empaquetando dkbot.exe (consola)...
+python -m PyInstaller %COMMON% --name dkbot --console main.py
 if errorlevel 1 goto err
 
 echo [*] Empaquetando dkbot-gui.exe (sin consola)...
-python -m PyInstaller --noconfirm --clean --onefile --name dkbot-gui --windowed ^
-  --add-data "pxg_bot/web;pxg_bot/web" ^
-  --add-data "tools/pxg_agent.lua;tools" ^
-  --add-data "tools/agent_loader/pxg_agent_loader.dll;tools/agent_loader" ^
-  --add-data "config.json;." ^
-  main.py
+python -m PyInstaller %COMMON% --name dkbot-gui --windowed main.py
 if errorlevel 1 goto err
 
-echo [+] Listo en dist\. Ejecuta dist\dkbot-gui.exe (o dist\dkbot.exe gui).
+echo [+] Listo en dist\. Ejecuta dist\dkbot-gui.exe (app de escritorio).
 goto done
 
 :err

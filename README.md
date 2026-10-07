@@ -413,10 +413,12 @@ configurable por `settings.humanizer.overrides`.
 
 ---
 
-## 13. GUI web (`pxg_bot/webui.py` + `pxg_bot/web/`)
+## 13. Interfaz (`pxg_bot/webui.py` + `pxg_bot/web/` + `pxg_bot/app.py`)
 
-Servidor `http.server` en `192.168.1.52:8765` (configurable). Arranca/para el
-bot, muestra estado/log/mapa/ruta y edita config.
+Servidor `http.server` en `127.0.0.1:8765` (configurable). Arranca/para el bot,
+muestra estado/log/mapa/ruta y edita config. La misma UI se puede abrir en el
+navegador (`gui`) o en una **ventana nativa** de escritorio (`app`, pywebview +
+bandeja del sistema); ver §18.
 
 Endpoints:
 - `GET /api/state`, `/api/log`, `/api/config`, `/api/world`, `/api/otmm`,
@@ -541,18 +543,30 @@ python tools\inject_windows.py --dll tools\agent_loader\pxg_agent_loader.dll
 run_windows.bat
 ```
 
-### Ejecutable (.exe) con la GUI web incluida
+### Aplicación de escritorio y ejecutable
 
 ```bat
+python main.py app          # ventana nativa (pywebview/WebView2) + bandeja
+python main.py gui          # modo web (navegador)
+
 build_exe.bat
 :: genera:
-::   dist\dkbot.exe       -> consola (CLI: run/scan/... + GUI)
-::   dist\dkbot-gui.exe   -> sin consola (doble clic -> GUI web)
+::   dist\dkbot.exe       -> consola (CLI: run/scan/... + app/GUI)
+::   dist\dkbot-gui.exe   -> sin consola (doble clic -> app de escritorio)
 ```
-El `.exe` incluye la interfaz web (`pxg_bot/web`), el agente `.lua`, la DLL y
-`config.json`; al arrancar copia los ficheros escribibles (config, agente, DLL)
-junto al exe. `dist\dkbot.exe` sin subcomando arranca la GUI. Detalle de rutas
-"frozen" en `pxg_bot/paths.py`.
+
+La **app** (`pxg_bot/app.py`) reutiliza la UI web en una **ventana nativa**
+(WebView2) con **bandeja del sistema** (pystray): mostrar/ocultar, *siempre
+encima*, arrancar/parar bot y salir. **Cerrar la ventana la minimiza a bandeja**
+(configurable). Si `pywebview`/WebView2 no están disponibles, cae al modo
+navegador. El `.exe` sin subcomando abre la app.
+
+Config en `ui`: `mode`, `debug`, `icon`, `window{width,height,title,on_top}`,
+`tray{enabled,minimize_on_close}`.
+
+El `.exe` incluye la interfaz web (`pxg_bot/web`), el agente `.lua`, la DLL, el
+icono y `config.json`; al arrancar copia los ficheros escribibles (config,
+agente, DLL) junto al exe. Detalle de rutas "frozen" en `pxg_bot/paths.py`.
 
 Otros subcomandos: `scan`, `pointer`, `dump`, `procs`.
 
@@ -596,12 +610,15 @@ El bot es Python puro + stdlib, así que corre en ambas plataformas.
 - **Config/rutas**: `pxg_bot/config.py` deriva las rutas de `mydata` según
   plataforma y `process_name` es `pxgme.exe`/`pxgme-linux`. `tools/setup_client.py`
   (attach) y la GUI detectan el `mydata` real y reescriben `config.json`.
+- **App de escritorio**: `pxg_bot/app.py` envuelve la UI en una ventana nativa
+  (**pywebview/WebView2**) con **bandeja** (pystray) y cierre→minimizar. Sin esas
+  dependencias cae al navegador (`gui`).
 - **Empaquetado**: `build_exe.bat` (PyInstaller) genera `dist\dkbot.exe` (consola,
-  CLI+GUI) y `dist\dkbot-gui.exe` (sin consola). La GUI web, el agente `.lua`, la
-  DLL y `config.json` van embebidos; `pxg_bot/paths.py` resuelve las rutas en
-  modo "frozen" (datos en el bundle, ficheros escribibles junto al exe) y la GUI
-  lanza el bot como subproceso del propio exe. `run_windows.bat` arranca la
-  versión "de repo" (inyecta + GUI).
+  CLI+app/GUI) y `dist\dkbot-gui.exe` (sin consola, app). La UI web, el agente
+  `.lua`, la DLL, el icono y `config.json` van embebidos; `pxg_bot/paths.py`
+  resuelve las rutas en modo "frozen" (datos en el bundle, ficheros escribibles
+  junto al exe) y la app lanza el bot como subproceso del propio exe.
+  `run_windows.bat` arranca la versión "de repo" (inyecta + GUI).
 
 Nota sobre el cliente Windows: carga los scripts como `.klua` **cifrado**
 (`assets/init.klua`, módulos `.klmod`), y solo cae a `assets/init.lua` si
