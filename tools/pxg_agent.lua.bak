@@ -1,7 +1,7 @@
 -- Agente Lua PXG v3: estado + comandos. Cancela su tick anterior al reejecutarse.
 -- `PXG_DIR` lo inyecta el loader (DLL en Windows / attach en Linux). Usar
 -- SIEMPRE barras normales: Lua 5.1 trata `\U`, `\P`... como escapes invalidos.
-local DIR = _G.PXG_DIR or "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata"
+local DIR = _G.PXG_DIR or "/home/dkaisak/Descargas/pxg-linux/mydata"
 DIR = DIR:gsub("\\", "/")
 local STATE = DIR .. "/pxg_bot_state.json"
 local CMD = DIR .. "/pxg_bot_cmd.txt"
@@ -1138,7 +1138,7 @@ local function snapshot()
       local ok, cc = pcall(function() return g_game.getControllingCreature() end)
       return ok and cc and tostring(cc:getName()) or ""
     end)(),
-    creatures = {}, nearby = {}, battle = {}, moves = {}, bag = {},
+    creatures = {}, nearby = {}, battle = {}, moves = {}, bag = {}, bag_counts = {},
     nav_result = tostring(PXG_LAST_NAV or ""),
     last_cmd = tostring(PXG_LAST_CMD or ""),
     is_walking = (function()
@@ -1360,7 +1360,16 @@ local function snapshot()
       if oi and items then
         for _, it in ipairs(items) do
           local oid, id = pcall(function() return it:getId() end)
-          if oid and id then st.bag[#st.bag + 1] = id end
+          if oid and id then
+            st.bag[#st.bag + 1] = id
+            local okn, n = pcall(function() return it:getCount() end)
+            n = (okn and tonumber(n)) or 1
+            if n < 1 then n = 1 end
+            -- clave STRING: cjson no puede serializar arrays dispersos con
+            -- claves numericas (bag_counts[id] con id=2269 -> "excessively
+            -- sparse array"); con string va como objeto. Python ya lee str.
+            st.bag_counts[tostring(id)] = (st.bag_counts[tostring(id)] or 0) + n
+          end
         end
       end
     end
@@ -1503,6 +1512,12 @@ local function snapTick()
   local ok, st = pcall(snapshot)
   if not ok then st = { error = tostring(st) } end
   local oke, json = pcall(cjson.encode, st)
+  if not oke then
+    -- No dejar el estado congelado por un campo no serializable: publicar un
+    -- estado minimo con el error para que el bot lo vea y no se quede a ciegas.
+    local ok2, j2 = pcall(cjson.encode, { connected = true, snapshot_error = tostring(json) })
+    if ok2 then json = j2; oke = true end
+  end
   if oke then
     local f = io.open(STATE, "w")
     if f then f:write(json); f:close() end

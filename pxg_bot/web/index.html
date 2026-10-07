@@ -47,6 +47,7 @@
     <button class="tab" data-tab="ruta">Ruta</button>
     <button class="tab" data-tab="skills">Skills</button>
     <button class="tab" data-tab="ignorar">Ignorar</button>
+    <button class="tab" data-tab="ia">IA</button>
     <button class="tab" data-tab="log">Registro</button>
   </nav>
   </div>
@@ -75,6 +76,22 @@
         <section class="card span2">
           <h3>Contadores de sesión</h3>
           <div class="muted small" id="counters">—</div>
+        </section>
+
+        <section class="card">
+          <h3>Captura (balls)</h3>
+          <div class="field"><label>Ball ítem</label>
+            <input type="number" id="cap-item" class="mini" min="1" max="999999" value="2652" />
+            <span class="muted small">id del ítem</span></div>
+          <div class="field"><label>Rango</label>
+            <input type="number" id="cap-range" class="mini" min="1" max="8" value="4" />
+            <span class="muted small">tiles desde donde lanzar</span></div>
+          <div class="field"><label>Solo nombres</label>
+            <input type="text" id="cap-names" placeholder="Charmander, Dratini" />
+            <span class="muted small">lista por coma (vacío = shiny / todos)</span></div>
+          <div class="field"><label>Excluir</label>
+            <input type="text" id="cap-exclude" placeholder="Rattata" />
+            <span class="muted small">nunca lanzar a estos nombres</span></div>
         </section>
 
         <section class="card">
@@ -147,6 +164,13 @@
           <div class="field"><label>Enemigos min</label>
             <input type="number" id="buffmin" class="mini" min="1" max="20" value="3" />
             <span class="muted small">nº de enemigos visibles para usar el buff</span></div>
+          <div class="field"><label>Gate</label>
+            <select id="buffgate" class="mini">
+              <option value="screen">En pantalla (sin distancia)</option>
+              <option value="range">Todos a rango</option>
+              <option value="combat">Gate de combate</option>
+            </select>
+            <span class="muted small">cuándo puede salir el buff</span></div>
           <div class="muted small">El buff es una skill con efecto <code>buff</code> (p. ej. nevermiss) y se lanza <b>una vez</b> mientras haya enemigos.</div>
         </section>
 
@@ -263,6 +287,39 @@
           <h3>Ignorar criaturas <button id="ign-refresh" class="mini ghost right">refrescar</button></h3>
           <div id="ign" class="psk"></div>
           <div id="ign-info" class="muted small"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ============ IA ============ -->
+    <section class="pane" data-pane="ia">
+      <div class="grid">
+        <section class="card span2">
+          <h3>Decisión LLM <span class="muted small" id="llm-state"></span></h3>
+          <div class="stats">
+            <div class="stat"><span class="k">Estado</span><b id="llm-avail">—</b></div>
+            <div class="stat"><span class="k">Modelo</span><b id="llm-model">—</b></div>
+            <div class="stat"><span class="k">Consultas</span><b id="llm-calls">0</b></div>
+            <div class="stat"><span class="k">Edad</span><b id="llm-age">—</b></div>
+          </div>
+          <div class="row"><label>Decisión</label><b id="llm-decision" class="accent">—</b></div>
+          <div class="kv small"><span>governed: <code id="llm-gov">—</code></span></div>
+          <div class="muted small" id="llm-rationale"></div>
+          <div class="small bad" id="llm-error"></div>
+        </section>
+
+        <section class="card span2">
+          <h3>Telemetría de muertes <span class="muted small" id="tel-state"></span></h3>
+          <div class="stats">
+            <div class="stat"><span class="k">Muertes</span><b id="tel-deaths">0</b></div>
+            <div class="stat"><span class="k">Trace</span><b id="tel-trace">—</b></div>
+            <div class="stat"><span class="k">Episodios</span><b id="tel-file">—</b></div>
+            <div class="stat"><span class="k">Estado</span><b id="tel-flag">—</b></div>
+          </div>
+          <div class="kv small"><span>dir: <code id="tel-dir">—</code></span></div>
+          <div class="small bad" id="tel-error"></div>
+          <h4>Últimas muertes</h4>
+          <div id="tel-list" class="psk-list"></div>
         </section>
       </div>
     </section>

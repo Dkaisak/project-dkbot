@@ -162,8 +162,12 @@ salta.
   - **resume**: clic central, limpia estado, pausa `resume_pause_secs` → `idle`.
   - Única excepción al gate: **`panic_hp`** (vida baja del Pokémon).
 - **Buff en el lure**: lanza **una vez** la skill de buff (efecto con componente
-  `buff`, p. ej. `buff/nevermiss`), pero respetando el gate (no sale hasta que
-  todos estén a rango, salvo `panic_hp`).
+  `buff`, p. ej. `buff/nevermiss`) cuando hay `buff_visible_min` enemigos en
+  pantalla. Su gate es configurable (`buff_gate`): `screen` (**por defecto**, no
+  exige distancia → sale en cuanto aparecen los enemigos), `range` (todos los de
+  pantalla a `attack_range` del summon) o `combat` (usa el gate de combate). El
+  `panic_hp` siempre lo permite. Antes exigía siempre "todos a rango", lo que
+  retrasaba mucho el buff si algún enemigo quedaba lejos.
 - **Summon en el lure** (`lure_summon`): en `hold` ordena el ownsummon a un tile
   con sus 8 vecinos libres (`lure_summon_radius`); el pokestop espera a que
   llegue. Ver §5.6.
@@ -254,7 +258,10 @@ Extras:
   enemigo lejano en cámara **ya no bloquea**.
 - **Stun con ventana** (`stun_secs`, 2.5 s): se registra al castear una skill con
   `stun` en `effect` (`last_stun_at`); mientras dure, se considera al enemigo
-  aturdido y se puede revivir con vivos en rango.
+  aturdido y se puede revivir con vivos en rango. **El stun no dispara por sí
+  solo**: solo cuenta si además *hace falta* revivir (pokémon debilitado o alguna
+  skill del combo en cooldown). Así no revive a un pokémon sano con el combo
+  listo (p. ej. en pánico, que castea el stun continuamente).
 - **Combo agotado** (caso C): si no queda skill del combo para lanzar, revive
   igual aunque haya enemigos vivos, **lo más rápido posible** (salta
   `after_aoe_wait`, usa `fast_min_interval` y los tiempos `urgent_*`).
@@ -400,6 +407,10 @@ Así se evitan "cuerpos falsos" (criaturas que se alejan de la vista).
   - **No cuenta el summon propio** (`is_summon`) ni duplica por tick (dedupe por
     instancia), para no invertir la tabla.
 - `capture` lanza la ball a los cuerpos shiny o a todos si `capture.catch_all`.
+  **Filtro por nombre**: `capture.names` (lista blanca; si tiene nombres, **solo**
+  a esos se lanza, aunque no sean shiny) y `capture.exclude` (lista negra; gana
+  sobre `names`). Editable en la GUI (tarjeta *Captura*); comparación sin
+  mayúsculas.
   `capture.range` (4): lanza desde **≤ 4 tiles**; si el cuerpo está más lejos, se
   acerca primero (antes estaba en 1, ahora puede lanzar desde 4).
 - La ball se lanza **por Lua**: `ball <itemId> x y z` obtiene el `Thing` del
@@ -428,7 +439,7 @@ bandeja del sistema); ver §18.
 Endpoints:
 - `GET /api/state`, `/api/log`, `/api/config`, `/api/world`, `/api/otmm`,
   `/api/otmm/info`, `/api/route`, `/api/routes`, `/api/pokemon_skills`,
-  `/api/ignore`
+  `/api/ignore`, `/api/deaths`
 - `POST /api/bot` (start/stop), `/api/command`, `/api/control`, `/api/config`,
   `/api/route`, `/api/routes`, `/api/routes/delete`,
   `/api/pokemon_skills/order`, `/api/pokemon_skills/lure_order`, `/api/ignore`
@@ -441,7 +452,10 @@ skill lista %, solo todos a rango, idle inicio), **Equipo**
 iniciarla), mapa real (base otmm, pan/zoom, transitabilidad), editor de ruta,
 **Skills / combo del lure** (orden por Pokémon + skills marcadas para cada lure,
 y **✕** para borrar del catálogo; el Pokémon activo se resalta y no se puede
-borrar) e **Ignorar criaturas**. El panel lee la `party` del estado **en tiempo real** (slots con HP y
+borrar) e **Ignorar criaturas**. Pestaña **IA**: tarjetas de **decisión del LLM**
+(estado/modelo/consultas/decisión actual) y **telemetría de muertes** (contador,
+tamaño de los ficheros y últimas muertes con sus señales; ver §21/§22). El panel
+lee la `party` del estado **en tiempo real** (slots con HP y
 flag de activo) para el selector de Pokémon. El cliente no expone el nombre por
 slot: se muestra "Slot N" y el panel **aprende** el nombre cuando ese Pokémon
 está activo (se guarda en el navegador). La tarjeta *Estado* muestra además
@@ -454,7 +468,8 @@ skills, pokestops, lures), tomados del `status_file`.
 
 - `process_name`, `settings` (`tick_seconds`, `state_source`, humanizer…),
   `lua` (rutas de los ficheros de estado/cmd/control/world/shiny/routes/
-  pokemon_skills/ignore/minimap).
+  pokemon_skills/ignore/minimap), `llm` (capa de decisión con LLM; ver §21) y
+  `telemetry` (captura de muertes para aprender; ver §22).
 - `behaviors`: `crisis`, `healing`, `capture`, `combat`, `loot`, `revive`,
   `summon`, `route`, `explore` (ver §5 para el detalle de cada uno).
 
@@ -478,6 +493,7 @@ sobreescribe. La GUI edita `config.json` y el canal de control
 | `pxg_routes.json` | Rutas guardadas (waypoints + Pokémon de la ruta). |
 | `pxg_pokemon_skills.json` | Skills por Pokémon + orden de combo. |
 | `pxg_ignore.json` | Lista de ignorados (nombres + ids). |
+| `pxg_clans.json` | Mapa `skull → clan` (insignia de clan de los jugadores). |
 | `pxg_walkmap.txt` | Cache de transitabilidad escaneada por el agente. |
 | `minimap.otmm` | Minimapa del cliente (lo lee el bot). |
 
@@ -499,9 +515,10 @@ sobreescribe. La GUI edita `config.json` y el canal de control
 - `lua_probe.py`: ejecuta un chunk Lua dentro del cliente y lee `_G.PXG_DUMP`
   (diagnóstico; Linux/gdb).
 - `pxg_agent.lua`: el agente (estado + comandos + navegación).
-- `record_route.py`, `e2e_test.py`, `test_behaviors.py`, `fake_client.py`,
-  `find_by_name.py`, `pxg_recon.py`: apoyo (grabar rutas, tests de behaviors,
-  tests e2e, reconocimiento).
+- `record_route.py`, `e2e_test.py`, `test_behaviors.py`, `test_llm.py`,
+  `test_telemetry.py`, `deaths_report.py`, `fake_client.py`, `find_by_name.py`,
+  `pxg_recon.py`: apoyo (grabar rutas, tests de behaviors, tests e2e, tests de la
+  capa LLM y de telemetría, informe post-mortem, reconocimiento).
 
 ---
 
@@ -629,3 +646,141 @@ Nota sobre el cliente Windows: carga los scripts como `.klua` **cifrado**
 (`assets/init.klua`, módulos `.klmod`), y solo cae a `assets/init.lua` si
 `init.klua` falla; por eso la inyección va por DLL, no por fichero. Detalle y
 método de derivación de firmas en `tools/agent_loader/NOTES.md`.
+
+---
+
+## 21. Capa de decisión con LLM (opcional)
+
+Meta-policy que deja que un **LLM** decida **cuál** de los behaviors gobernados
+se ejecuta, en vez de la política fija de prioridades. Es **advisory**: el LLM
+no emite primitivas ni acciones de bajo nivel, solo elige entre
+`combat` / `route` / `explore`. El resto de behaviors (`crisis`, `revive`,
+`loot`, `capture`, `summon`) siguen siendo **100% deterministas** y conservan su
+turno (el LLM está a prioridad **71**, por encima de `combat=70` y por debajo de
+`revive=80`).
+
+- **Módulo**: `pxg_bot/llm/` (`perception`, `decision`, `graph`, `controller`,
+  `behavior`). El grafo es un **LangGraph** `StateGraph` `perceive → decide →
+  validate`, con salida estructurada (function calling) validada contra los
+  behaviors gobernados.
+- **Asíncrono**: la decisión se calcula en un **hilo** a su propia cadencia
+  (`decide_interval`); el bucle del bot (0.05 s) solo **observa** el estado y,
+  si hay decisión fresca, el `LlmBehavior` **delega** en el behavior elegido.
+- **Degradación segura**: si el LLM está deshabilitado, sin API key, tarda
+  (`stale_secs`) o falla, se vuelve solo a la prioridad clásica. Nunca bloquea
+  ni tumba el bot.
+- **Proveedor**: gateway OpenAI-compatible de **OpenCode Zen / Go**
+  (`https://opencode.ai/zen/v1`), configurable. Requiere la dependencia opcional
+  (`pip install langgraph langchain-openai`) y `OPENCODE_API_KEY`.
+- **Estado**: el `status_file` incluye un bloque `llm` (`available`, `model`,
+  `governed`, `calls`, `decision{rationale, age}`, `error`); el `chosen` del tick
+  es `llm` cuando la meta-policy decide.
+
+### Configuración (`config.json` → `llm`)
+
+| Clave | Def. | Qué hace |
+|---|---|---|
+| `enabled` | `false` | Activa la capa LLM. |
+| `base_url` | `https://opencode.ai/zen/v1` | Endpoint OpenAI-compatible. |
+| `model` | `deepseek-v4.1-flash` | Modelo de decisión. |
+| `api_key_env` | `OPENCODE_API_KEY` | Variable de entorno con la key. |
+| `api_key` | `""` | Key explícita (alternativa a la env). |
+| `structured_method` | `function_calling` | `function_calling` / `json_schema` / `json_mode`. |
+| `decide_interval` | `2.5` | Segundos entre decisiones del hilo. |
+| `stale_secs` | `12.0` | Caducidad de una decisión (después se ignora). |
+| `governed` | `[combat,route,explore]` | Behaviors que el LLM puede elegir. |
+| `priority` | `71` | Prioridad del `LlmBehavior`. |
+| `max_enemies` | `12` | Enemigos que se pasan al prompt. |
+| `temperature` / `timeout` / `max_retries` | `0` / `20` / `1` | Parámetros del modelo. |
+
+### Ejecutar
+
+```bash
+pip install langgraph langchain-openai
+export OPENCODE_API_KEY=...              # https://opencode.ai/auth
+# en config.json: "llm": { "enabled": true }
+python3 main.py run --verbose            # el status mostrara chosen=llm y la decision
+python3 tools/test_llm.py                # tests (sin red ni cliente)
+```
+
+> Nota de empaquetado: `langgraph`/`langchain` no están en el build de PyInstaller
+> por defecto; si se activa la capa LLM en el `.exe`, hay que incluirlas (crece
+> el tamaño del bundle).
+
+---
+
+## 22. Telemetría de muertes (Fase 1: datos para aprender)
+
+`pxg_bot/telemetry.py` observa el juego y **graba los datos** para poder
+aprender a no morir. No decide nada; solo captura. Se cuelga del tick
+(`Bot.tick` → `telemetry.observe`), sin dependencias y de forma degradable.
+
+- **Búfer circular** con las últimas `window_secs` de juego (muestreadas cada
+  `sample_secs`).
+- **`pxg_trace.jsonl`**: una fila por muestra (los *negativos*: casi-muertes que
+  no acabaron en muerte). Rota por tamaño.
+- **`pxg_deaths.jsonl`**: al detectar una muerte, vuelca la **ventana previa** +
+  metadatos (señales, nivel, xp, hp, posición, behavior, chat).
+- Las señales del mismo episodio se **coalescen** (`settle_secs`) y hay
+  **cooldown** (`death_cooldown_secs`) para no duplicar.
+
+### Señales de muerte (`telemetry.*`)
+
+| Señal | Qué la dispara |
+|---|---|
+| `exp_drop` | La **experiencia baja** (morir resta XP) — la más fiable. |
+| `level_drop` | El **nivel baja** (bajar de nivel = muerte). |
+| `player_death` | La vida del jugador llega a 0. |
+| `alert_msg` | Aparece un mensaje de muerte en el chat (`alert_keywords`). |
+| `pokemon_faint` | Un pokémon del equipo se debilita. |
+| `disconnect` | El cliente se desconecta. |
+
+`exp` lo publica el agente (`tools/pxg_agent.lua`); el nivel ya venía.
+
+### Configuración (`config.json` → `telemetry`)
+
+| Clave | Def. | Qué hace |
+|---|---|---|
+| `enabled` | `false` | Activa la captura. |
+| `dir` | `""` | Carpeta de salida (vacío = junto al `status_file`). |
+| `sample_secs` | `0.25` | Cadencia de muestreo. |
+| `window_secs` | `30.0` | Ventana guardada por episodio. |
+| `trace` / `trace_max_mb` | `true` / `50` | Traza continua y rotación. |
+| `death_cooldown_secs` / `settle_secs` | `10.0` / `1.0` | Anti-duplicado / coalescing. |
+| `exp_drop`…`disconnect` | `true` | Señales activas. |
+| `alert_keywords` | `null` | Palabras del chat (null = lista por defecto). |
+
+### Post-mortem
+
+```bash
+python3 tools/deaths_report.py            # resuelve el dir desde config.json
+python3 tools/deaths_report.py --dir <mydata>
+python3 tools/test_telemetry.py           # tests (sin cliente)
+```
+
+El informe responde a: **cuántas muertes/hora**, de qué tipo, y el contexto
+(vida mínima, enemigos en pantalla, distancia, revives, behavior activo) en los
+segundos previos. Es la base de la Fase 2 (modelo de riesgo → `SafetyBehavior`).
+
+---
+
+## 23. Detección de clanes (skull)
+
+En PokeXGames el **símbolo del clan** se dibuja en el nameplate **a la izquierda
+del nombre** del jugador (no aparece en pokémones). Ese icono es el **`skull`** de
+la criatura (`creature:getSkull()`), con ids **custom 50–88** (p. ej. `custom_62`).
+El cliente **no** traduce ese id a nombre — lo manda el servidor —, así que el bot
+mantiene una tabla `skull → clan`.
+
+- **Agente**: `snapCreature` publica `skull` (y `emblem`) de cada criatura.
+- **Bridge**: `pxg_bot/clans.py` (`ClanTable`) mapea `skull → clan`; el
+  `Creature` resultante lleva `skull`, `emblem` y `clan`.
+- **Tabla**: `pxg_clans.json` (`{"clans": {"62": "wingeon"}}`), **editable** y con
+  recarga en caliente. Semilla confirmada en vivo: **`62 = wingeon`**.
+- **GUI**: en *Ignorar criaturas* cada jugador muestra su `[clan]` y `skull N`.
+
+Clanes del juego: naturia, gardestrike, malefic, wingeon, raibolt, psycraft,
+orebound, seavell, volcanic, ironhard.
+
+> El mapa se completa observando jugadores: cuando sepas el clan de alguien,
+> añade `"<skull>": "<clan>"` en `pxg_clans.json` (o dímelo y lo añado).

@@ -227,23 +227,37 @@ class CaptureBehavior(Behavior):
     def _pending(self, bb: Blackboard) -> list:
         return bb.notes.setdefault("capture_pending", [])
 
+    def _name_set(self, key: str) -> set:
+        raw = self.cfg.get(key)
+        if isinstance(raw, str):
+            raw = raw.replace(";", ",").split(",")
+        if not isinstance(raw, (list, tuple)):
+            return set()
+        return {str(n).strip().lower() for n in raw if str(n).strip()}
+
     def _promote(self, bb: Blackboard) -> None:
         # los cuerpos se lottean primero; al quedar looteados pasan a captura si
-        # son shiny (obligatorio) o si catch_all esta activo.
+        # pasan el filtro (nombre / shiny / catch_all).
         meta = bb.notes.get("corpse_meta")
         if not meta:
             return
         looted = bb.notes.get("looted_ids", set())
         pending = self._pending(bb)
-        catch_all = bool(self.cfg.get("catch_all", False))
         for cid in list(meta.keys()):
             if cid in looted:
                 m = meta.pop(cid)
-                if m.get("shiny") or catch_all:
+                if self._valid(m):
                     pending.append({"id": cid, "n": 0, **m})
                     bb.count("ball")   # 1 por cuerpo (no por cada throw)
 
     def _valid(self, t: dict) -> bool:
+        # filtro por nombre: `exclude` gana; si hay `names`, solo esos.
+        name = str(t.get("name", "")).strip().lower()
+        if name and name in self._name_set("exclude"):
+            return False
+        names = self._name_set("names")
+        if names:
+            return name in names
         if t.get("shiny"):
             return True
         return bool(self.cfg.get("enabled", True)) and bool(self.cfg.get("catch_all", False))
@@ -621,15 +635,31 @@ class CombatBehavior(Behavior):
             return False
         return self._buff_candidate(state) is not None
 
+    def _buff_gate_ok(self, state: GameState) -> bool:
+        """Gate propio del buff segun `buff_gate`:
+        - `screen` (def): no exige distancia; basta con `buff_visible_min` en
+          pantalla (ya garantizado por `_buff_wanted`).
+        - `range`: TODOS los de pantalla a `attack_range` del summon.
+        - `combat`: usa el gate de combate (`require_all_close` /
+          `cast_min_in_range`).
+        El panico (vida baja) siempre permite."""
+        if self._panic(state):
+            return True
+        gate = str(self.cfg.get("buff_gate", "screen")).lower()
+        if gate == "range":
+            return self._all_enemies_close(state, int(self.cfg.get("attack_range", 3)))
+        if gate == "combat":
+            return self._attack_gate_ok(state)
+        return True
+
     def _maybe_buff(self, state: GameState, bb: Blackboard, inp) -> bool:
         if not self._buff_wanted(state, bb):
             return False
         key = self._buff_candidate(state)
         if key is None:
             return False
-        # el buff tambien respeta el gate (no lanzar hasta que todos a rango,
-        # salvo panic): si no, castea un cd aunque no esten todos a rango.
-        if not self._attack_gate_ok(state):
+        # gate propio del buff (por defecto: en pantalla, sin exigir distancia)
+        if not self._buff_gate_ok(state):
             return False
         if bb.ready("attack", float(self.cfg.get("cooldown", 0.3))):
             inp.press(key)
@@ -1195,15 +1225,18 @@ class ReviveBehavior(Behavior):
         return last > 0 and (time.time() - last) <= float(self.cfg.get("stun_secs", 2.5))
 
     def urgent(self, state: GameState, bb: Blackboard) -> bool:
-        """Revive de alta prioridad (debilitado / agotado / vivos stuneados):
-        loot y captura deben ceder para no robarle el turno."""
+        """Revive de alta prioridad (debilitado / agotado / combo en cooldown con
+        enemigos vivos stuneados): loot y captura deben ceder para no robarle el
+        turno. El stun solo cuenta si ademas hace falta revivir (combo en
+        cooldown); por si solo NO es urgente."""
         hp = self._slot_hp(state)
         if hp is not None and hp <= 0:
             return True
-        _used, exhausted = self._combo_status(state)
+        used, exhausted = self._combo_status(state)
         if exhausted:
             return True
-        return self._stun_active(state, bb) and self._alive_in_range(state) > 0
+        return (used and self._stun_active(state, bb)
+                and self._alive_in_range(state) > 0)
 
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
         if bb.paused or not self.cfg.get("enabled", True):
@@ -1219,8 +1252,11 @@ class ReviveBehavior(Behavior):
         # combo sin cooldowns). Evita el doble revive por lag.
         if not dead and not used:
             bb.notes["revive_ready"] = True
-        # revivir es obligatorio antes de retomar la ruta: se marca pendiente
-        if dead or used or stun:
+        # "hace falta" revivir: pokemon debilitado o alguna skill del combo en
+        # cooldown. El stun NO dispara por si solo: solo facilita el caso B
+        # (revivir con enemigos vivos). Si no hace falta, no se revive.
+        need = dead or used
+        if need:
             bb.notes["revive_pending"] = True
         elif not rec:
             bb.notes.pop("revive_pending", None)
@@ -1228,7 +1264,7 @@ class ReviveBehavior(Behavior):
         if rec:
             # la secuencia ya esta en marcha: se completa SIEMPRE
             return True
-        if not (dead or used or stun):
+        if not need:
             return False
         # si acaba de revivir y aun no se recupero, esperar (con reintento)
         if not bb.notes.get("revive_ready", True):
@@ -1724,7 +1760,8 @@ class SummonBehavior(Behavior):
         bb.mark("summon")
 
 
-def build_behaviors(cfg: dict, route: Optional[Route], world=None) -> list[Behavior]:
+def build_behaviors(cfg: dict, route: Optional[Route], world=None,
+                    llm=None) -> list[Behavior]:
     behaviors_cfg = cfg.get("behaviors", {})
     settings = cfg.get("settings", {})
     behaviors: list[Behavior] = [
@@ -1739,5 +1776,15 @@ def build_behaviors(cfg: dict, route: Optional[Route], world=None) -> list[Behav
         SummonBehavior(behaviors_cfg.get("summon", {}), settings, world),
         ExploreBehavior(behaviors_cfg.get("explore", {}), settings, world),
     ]
+    # Capa de decision con LLM (meta-policy): se construye solo si la seccion
+    # `llm` esta habilitada y hay controlador; gobierna combat/route/explore.
+    llm_cfg = cfg.get("llm", {}) or {}
+    if llm is not None and llm_cfg.get("enabled", False):
+        from .llm.behavior import LlmBehavior
+
+        by_name = {b.name: b for b in behaviors}
+        governed = {name: by_name[name]
+                    for name in llm_cfg.get("governed", []) if name in by_name}
+        behaviors.append(LlmBehavior(llm_cfg, settings, governed, llm))
     behaviors.sort(key=lambda b: b.priority, reverse=True)
     return behaviors

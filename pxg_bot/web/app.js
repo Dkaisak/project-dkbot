@@ -153,6 +153,64 @@ function setRoutePokemon(name, slot) {
                    lastState ? (lastState.active_pokemon || "") : "");
 }
 
+function fmtBytes(n) {
+  if (n === null || n === undefined) return "—";
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1048576).toFixed(1) + " MB";
+}
+
+function renderLlm(llm) {
+  llm = llm || {};
+  const avail = llm.enabled ? (llm.available ? "activa" : "inactiva") : "off";
+  document.getElementById("llm-avail").textContent = avail;
+  document.getElementById("llm-model").textContent = llm.model || "—";
+  document.getElementById("llm-calls").textContent = llm.calls ?? 0;
+  document.getElementById("llm-age").textContent =
+    (llm.decision_age != null) ? llm.decision_age + "s" : "—";
+  const dec = llm.decision || null;
+  document.getElementById("llm-decision").textContent = dec ? (dec.behavior || "—") : "—";
+  document.getElementById("llm-gov").textContent = (llm.governed || []).join(", ") || "—";
+  document.getElementById("llm-rationale").textContent =
+    dec && dec.rationale ? "“" + dec.rationale + "”" : "";
+  document.getElementById("llm-error").textContent = llm.error || "";
+  document.getElementById("llm-state").textContent = llm.enabled ? "" : "(deshabilitada)";
+}
+
+function renderTelemetry(tel) {
+  tel = tel || {};
+  document.getElementById("tel-deaths").textContent = tel.deaths ?? 0;
+  document.getElementById("tel-trace").textContent = fmtBytes(tel.trace_bytes);
+  document.getElementById("tel-file").textContent = fmtBytes(tel.deaths_bytes);
+  document.getElementById("tel-flag").textContent = tel.enabled ? "activa" : "off";
+  document.getElementById("tel-dir").textContent = tel.dir || "—";
+  document.getElementById("tel-error").textContent = tel.error || "";
+  document.getElementById("tel-state").textContent = tel.enabled ? "" : "(deshabilitada)";
+}
+
+async function pollDeaths() {
+  const box = document.getElementById("tel-list");
+  if (!box) return;
+  const data = await api("/api/deaths?tail=8");
+  const rows = data.deaths || [];
+  if (!rows.length) {
+    box.innerHTML = '<span class="muted small">sin muertes todavía</span>';
+    return;
+  }
+  box.innerHTML = "";
+  for (const d of rows.slice().reverse()) {
+    const row = document.createElement("div");
+    row.className = "psk-row";
+    const when = d.ts ? new Date(d.ts * 1000).toLocaleTimeString() : "?";
+    const hp = (d.player_hp_pct === null || d.player_hp_pct === undefined) ? "?" : d.player_hp_pct;
+    row.innerHTML = `<span class="psk-k">${d.index ?? "?"}</span>` +
+      `<span class="psk-name">${when}</span>` +
+      `<span class="psk-aoe">${(d.signals || []).join(",")}</span>` +
+      `<span class="muted small">hp ${hp}% · L${d.level ?? "?"} · ${d.chosen || "?"}</span>`;
+    box.appendChild(row);
+  }
+}
+
 function renderState(s) {
   lastState = s;
   document.getElementById("conn").classList.toggle("on", !!s.connected);
@@ -194,6 +252,18 @@ function renderState(s) {
   const cap = (s.control && s.control.capture) || {};
   const catchall = document.getElementById("catchall");
   if (document.activeElement !== catchall && cap.catch_all != null) catchall.checked = !!cap.catch_all;
+  const capItem = document.getElementById("cap-item");
+  if (capItem && document.activeElement !== capItem && cap.ball_item != null) capItem.value = cap.ball_item;
+  const capRange = document.getElementById("cap-range");
+  if (capRange && document.activeElement !== capRange && cap.range != null) capRange.value = cap.range;
+  const capNames = document.getElementById("cap-names");
+  if (capNames && document.activeElement !== capNames && cap.names != null) {
+    capNames.value = Array.isArray(cap.names) ? cap.names.join(", ") : String(cap.names || "");
+  }
+  const capExcl = document.getElementById("cap-exclude");
+  if (capExcl && document.activeElement !== capExcl && cap.exclude != null) {
+    capExcl.value = Array.isArray(cap.exclude) ? cap.exclude.join(", ") : String(cap.exclude || "");
+  }
   const combat = (s.control && s.control.combat) || {};
   const aoemin = document.getElementById("aoemin");
   if (document.activeElement !== aoemin && combat.lure_visible_min != null) aoemin.value = combat.lure_visible_min;
@@ -215,6 +285,8 @@ function renderState(s) {
   if (buffon && document.activeElement !== buffon && combat.buff_on_screen != null) buffon.checked = !!combat.buff_on_screen;
   const buffmin = document.getElementById("buffmin");
   if (buffmin && document.activeElement !== buffmin && combat.buff_visible_min != null) buffmin.value = combat.buff_visible_min;
+  const buffGate = document.getElementById("buffgate");
+  if (buffGate && document.activeElement !== buffGate && combat.buff_gate != null) buffGate.value = combat.buff_gate;
   const rev = (s.control && s.control.revive) || {};
   const revSlot = document.getElementById("rev-slot");
   if (revSlot && document.activeElement !== revSlot && rev.slot != null) revSlot.value = rev.slot;
@@ -249,6 +321,9 @@ function renderState(s) {
     const el = document.querySelector(`[data-cd="${m.key}"]`);
     if (el) el.textContent = `${Math.round(m.pct)}%`;
   }
+
+  renderLlm(s.llm || {});
+  renderTelemetry(s.telemetry || {});
 }
 
 /* ---------------- mapa ---------------- */
@@ -537,7 +612,9 @@ async function refreshIgnore() {
     const row = document.createElement("div");
     row.className = "psk-row";
     row.innerHTML = `<span class="psk-name">${c.name}</span> ` +
-      `<span class="muted small">${kind} · outfit ${c.outfit ?? "?"} · id ${c.id}</span>` +
+      (c.clan ? `<span class="psk-aoe">[${c.clan}]</span> ` : "") +
+      `<span class="muted small">${kind} · outfit ${c.outfit ?? "?"}` +
+      `${c.skull ? " · skull " + c.skull : ""} · id ${c.id}</span>` +
       (c.ignored ? ' <span class="psk-aoe">ignorado</span>' : "");
     const igId = document.createElement("button");
     igId.className = "mini"; igId.textContent = "ignorar id";
@@ -718,6 +795,23 @@ function wire() {
   rad.onchange = () => api("/api/control", "POST", { explore: { radius: parseInt(rad.value, 10) } });
   document.getElementById("patrol").onchange = (e) => api("/api/control", "POST", { explore: { patrol: e.target.checked } });
   document.getElementById("catchall").onchange = (e) => api("/api/control", "POST", { capture: { catch_all: e.target.checked } });
+  const _capNames = (v) => (v || "").split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+  const capItem = document.getElementById("cap-item");
+  if (capItem) capItem.onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { capture: { ball_item: n } });
+  };
+  const capRange = document.getElementById("cap-range");
+  if (capRange) capRange.onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { capture: { range: n } });
+  };
+  const capNames = document.getElementById("cap-names");
+  if (capNames) capNames.onchange = (e) =>
+    api("/api/control", "POST", { capture: { names: _capNames(e.target.value) } });
+  const capExcl = document.getElementById("cap-exclude");
+  if (capExcl) capExcl.onchange = (e) =>
+    api("/api/control", "POST", { capture: { exclude: _capNames(e.target.value) } });
   document.getElementById("aoemin").onchange = (e) => {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { lure_visible_min: n } });
@@ -752,6 +846,9 @@ function wire() {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { buff_visible_min: n } });
   };
+  const buffGate = document.getElementById("buffgate");
+  if (buffGate) buffGate.onchange = (e) =>
+    api("/api/control", "POST", { combat: { buff_gate: e.target.value } });
   const revSlot = document.getElementById("rev-slot");
   if (revSlot) revSlot.onchange = (e) => {
     const n = parseInt(e.target.value, 10);
@@ -804,5 +901,7 @@ setInterval(pollLog, 1000);
 setInterval(pollWorld, 1000);
 setInterval(refreshPokemonSkills, 4000);
 setInterval(refreshIgnore, 5000);
+setInterval(pollDeaths, 3000);
 pollState();
 pollWorld();
+pollDeaths();

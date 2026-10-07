@@ -31,7 +31,9 @@ class Bot:
         self._pid_file = self._derive_pid_file()
         self.world = self._build_world(cfg)
         self._densify_route()
-        self.behaviors = build_behaviors(cfg, route, self.world)
+        self.llm = self._build_llm(cfg)
+        self.telemetry = self._build_telemetry(cfg)
+        self.behaviors = build_behaviors(cfg, route, self.world, llm=self.llm)
         self._revive_behavior = next((b for b in self.behaviors if b.name == "revive"), None)
         self._orig_enabled = {b.name: b.cfg.get("enabled", True) for b in self.behaviors}
         rcfg0 = cfg.get("route") or {}
@@ -55,6 +57,19 @@ class Bot:
         if not base:
             return ""
         return os.path.join(os.path.dirname(base), "pxg_bot.pid")
+
+    def _build_llm(self, cfg: dict):
+        llm_cfg = cfg.get("llm", {}) or {}
+        if not llm_cfg.get("enabled", False):
+            return None
+        from .llm import build_controller
+
+        return build_controller(llm_cfg, cfg)
+
+    def _build_telemetry(self, cfg: dict):
+        from .telemetry import Telemetry
+
+        return Telemetry(cfg)
 
     def _build_world(self, cfg: dict):
         base = self.status_file or self.control_file or ""
@@ -98,6 +113,9 @@ class Bot:
                 print(f"[!] read_state: {exc}")
             state = GameState(player=Player(), connected=False)
         self._manage_pause(state)
+        # la capa LLM solo observa: decide en su hilo, sin bloquear el tick
+        if self.llm is not None:
+            self.llm.observe(state, self._llm_extra())
         # urgencia de revive: si el pokemon de la ruta esta debilitado, revive manda
         self.bb.notes["revive_urgent"] = self._revive_is_urgent(state)
         # sin revives -> logout + detener (proactivo, en cuanto llega a 0)
@@ -123,6 +141,8 @@ class Bot:
             except Exception as exc:
                 if self.verbose:
                     print(f"[!] {behavior.name}: {exc}")
+        if self.telemetry is not None:
+            self.telemetry.observe(state, chosen, self.bb)
         self.ticks += 1
         self.last_chosen = chosen
         return state, chosen
@@ -294,6 +314,8 @@ class Bot:
             "connected": bool(getattr(state, "connected", False)) if state else False,
             "humanizer": self.humanizer.profile,
             "counters": dict(self.bb.counters),
+            "llm": self.llm.status() if self.llm is not None else {"enabled": False},
+            "telemetry": self.telemetry.status() if self.telemetry is not None else {"enabled": False},
             "updated": time.time(),
         }
         try:
@@ -303,6 +325,14 @@ class Bot:
             os.replace(tmp, self.status_file)
         except OSError:
             pass
+
+    def _llm_extra(self) -> dict:
+        """Contexto extra (no presente en GameState) para el LLM: estado de ruta."""
+        if self.route is not None:
+            return {"route": {"index": self.route.index,
+                              "total": len(self.route.waypoints),
+                              "loop": bool(self.route.loop)}}
+        return {"route": None}
 
     def _manage_pause(self, state: GameState) -> None:
         crisis_cfg = self.cfg.get("behaviors", {}).get("crisis", {})
@@ -351,6 +381,10 @@ class Bot:
     def run(self, max_ticks: Optional[int] = None) -> None:
         tick_seconds = float(self.cfg.get("settings", {}).get("tick_seconds", 0.1))
         self._write_pid()
+        if self.llm is not None:
+            self.llm.start()
+            if self.verbose and not self.llm.available:
+                print(f"[llm] inactivo: {self.llm.error}")
         try:
             while max_ticks is None or self.loops < max_ticks:
                 self.loops += 1
@@ -383,6 +417,10 @@ class Bot:
                     print(self._format(state, chosen))
                 time.sleep(self._sleep_seconds(tick_seconds))
         finally:
+            if self.llm is not None:
+                self.llm.stop()
+            if self.telemetry is not None:
+                self.telemetry.close()
             if self.world is not None:
                 self.world.save()
             self._remove_pid()

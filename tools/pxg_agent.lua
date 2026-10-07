@@ -1,7 +1,7 @@
 -- Agente Lua PXG v3: estado + comandos. Cancela su tick anterior al reejecutarse.
 -- `PXG_DIR` lo inyecta el loader (DLL en Windows / attach en Linux). Usar
 -- SIEMPRE barras normales: Lua 5.1 trata `\U`, `\P`... como escapes invalidos.
-local DIR = _G.PXG_DIR or "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata"
+local DIR = _G.PXG_DIR or "/home/dkaisak/Descargas/pxg-linux/mydata"
 DIR = DIR:gsub("\\", "/")
 local STATE = DIR .. "/pxg_bot_state.json"
 local CMD = DIR .. "/pxg_bot_cmd.txt"
@@ -477,12 +477,24 @@ local function snapCreature(c)
   end
   local ownsummon = false
   pcall(function() ownsummon = (c.isOwnSummon == true) end)
+  -- skull: en PXG la insignia de clan se dibuja en el nameplate como el skull
+  -- (ids custom 50-88). El cliente no lo traduce a nombre; lo mapea el bot.
+  local skull = nil
+  if c.getSkull then
+    local okS, s = pcall(function() return c:getSkull() end)
+    if okS then skull = tonumber(s) end
+  end
+  local emblem = nil
+  if c.getEmblem then
+    local okE, e = pcall(function() return c:getEmblem() end)
+    if okE then emblem = tonumber(e) end
+  end
   return {
     id = tostring(oid and id or 0),
     name = tostring(c:getName()), x = cp.x, y = cp.y, z = cp.z,
     hp = c:getHealthPercent(),
     player = isKind(c, "isPlayer"), monster = isKind(c, "isMonster"), npc = isKind(c, "isNpc"),
-    outfit = outfit_type, ownsummon = ownsummon,
+    outfit = outfit_type, ownsummon = ownsummon, skull = skull, emblem = emblem,
   }
 end
 
@@ -1129,6 +1141,10 @@ local function snapshot()
     connected = true, name = lp:getName(),
     hp = lp:getHealth(), maxhp = lp:getMaxHealth(), hppct = lp:getHealthPercent(),
     level = lp:getLevel(), x = p.x, y = p.y, z = p.z, dir = lp:getDirection(),
+    exp = (function()
+      local ok, e = pcall(function() return lp:getExperience() end)
+      return ok and tonumber(e) or nil
+    end)(),
     attacking = (g_game.getAttackingCreature and g_game.getAttackingCreature() ~= nil) or false,
     attacking_name = (function()
       local ok, ac = pcall(function() return g_game.getAttackingCreature() end)
@@ -1365,7 +1381,10 @@ local function snapshot()
             local okn, n = pcall(function() return it:getCount() end)
             n = (okn and tonumber(n)) or 1
             if n < 1 then n = 1 end
-            st.bag_counts[id] = (st.bag_counts[id] or 0) + n
+            -- clave STRING: cjson no puede serializar arrays dispersos con
+            -- claves numericas (bag_counts[id] con id=2269 -> "excessively
+            -- sparse array"); con string va como objeto. Python ya lee str.
+            st.bag_counts[tostring(id)] = (st.bag_counts[tostring(id)] or 0) + n
           end
         end
       end
@@ -1509,6 +1528,12 @@ local function snapTick()
   local ok, st = pcall(snapshot)
   if not ok then st = { error = tostring(st) } end
   local oke, json = pcall(cjson.encode, st)
+  if not oke then
+    -- No dejar el estado congelado por un campo no serializable: publicar un
+    -- estado minimo con el error para que el bot lo vea y no se quede a ciegas.
+    local ok2, j2 = pcall(cjson.encode, { connected = true, snapshot_error = tostring(json) })
+    if ok2 then json = j2; oke = true end
+  end
   if oke then
     local f = io.open(STATE, "w")
     if f then f:write(json); f:close() end

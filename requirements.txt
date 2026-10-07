@@ -12,3 +12,10 @@
 #   python-xlib   ->  pip install python-xlib      (preferido)
 #   o xdotool     ->  apt install xdotool
 # Memoria en Linux usa /proc/<pid>/mem + ptrace (stdlib).
+#
+# --- Capa de decision con LLM (opcional) ---
+#   langgraph langchain-openai   ->  pip install langgraph langchain-openai
+#   Requiere la seccion `llm` (config.json) habilitada y una API key de
+#   OpenCode Zen/Go en la variable de entorno OPENCODE_API_KEY.
+#   Sin estas dependencias (o sin key) el bot funciona igual: la capa LLM
+#   queda inactiva y se usa la politica de prioridades clasica.

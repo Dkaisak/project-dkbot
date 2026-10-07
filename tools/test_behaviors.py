@@ -805,6 +805,34 @@ def test_revive_stun_bypass() -> None:
     print("OK revive: revive con vivos en rango si estan stuneados")
 
 
+def test_revive_no_stun_only_trigger() -> None:
+    """Un stun reciente NO debe disparar revive si el pokemon esta sano y el
+    combo listo (regresion: en panico revivia una y otra vez sin necesidad)."""
+    rb = ReviveBehavior(_revive_cfg(), {}, {"attack_range": 3})
+    # combo listo + skill de stun reciente + enemigo vivo en rango
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.skill_order = ["5"]
+    st.moves = [{"key": "5", "aoe": False, "effect": "damage/stun", "pct": 100}]
+    st.creatures = [Creature(cid=1, name="E", pos=Vec3(101, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, is_wild=True)]
+    bb = Blackboard()
+    bb.notes["last_stun_at"] = time.time()
+    assert rb._stun_active(st, bb) is True
+    assert rb._combo_status(st) == (False, False), "el combo debe estar listo"
+    assert rb.evaluate(st, bb) is False, "stun solo, sin necesidad -> no revive"
+    assert rb.urgent(st, bb) is False, "stun solo no es urgente (loot/captura no ceden)"
+    # con el combo en cooldown (hace falta) + stun -> si revive
+    st.moves = [{"key": "5", "aoe": False, "effect": "damage/stun", "pct": 0},
+                {"key": "6", "aoe": False, "effect": "damage", "pct": 100}]
+    st.skill_order = ["5", "6"]
+    bb2 = Blackboard()
+    bb2.notes["last_stun_at"] = time.time()
+    assert rb._combo_status(st)[0] is True
+    assert rb.evaluate(st, bb2) is True, "necesita reset + stun -> revive"
+    print("OK revive: un stun sin necesidad (combo listo) no dispara revive")
+
+
 def test_revive_exhausted_fallback() -> None:
     """Sin skills del combo: revive igual y rapido, aunque haya vivos en rango."""
     bb = Blackboard()
@@ -821,7 +849,7 @@ def test_revive_exhausted_fallback() -> None:
 
 
 def test_buff_respects_gate() -> None:
-    """El buff respeta el gate: no sale si no estan todos a rango."""
+    """Con `buff_gate=combat`, el buff no sale si no estan todos a rango."""
     bb = Blackboard()
     st = make_state()
     st.pokemon_pos = (100, 100, 7)
@@ -831,12 +859,40 @@ def test_buff_respects_gate() -> None:
     st.creatures = [Creature(cid=i, name=f"E{i}", pos=Vec3(101 + i * 3, 100, 7), hp_pct=100,
                              kind=CreatureKind.MONSTER, is_wild=True) for i in range(3)]
     cb = CombatBehavior({"buff_on_screen": True, "buff_visible_min": 3,
-                         "require_all_close": True, "attack_range": 3,
+                         "buff_gate": "combat", "require_all_close": True, "attack_range": 3,
                          "ready_pct": 100, "cooldown": 0.0}, {})
     inp = RecInput()
     cb.act(st, bb, inp)
     assert "9" not in inp.skills, f"el buff no debe salir si no todos a rango: {inp.skills}"
-    print("OK buff: respeta el gate (no sale si no todos a rango)")
+    print("OK buff: con gate de combate no sale si no todos a rango")
+
+
+def test_buff_gate() -> None:
+    """buff_gate: 'screen' (def) no exige distancia; 'range'/'combat' si."""
+    def skills(**kw):
+        bb = Blackboard()
+        st = make_state()
+        st.pokemon_pos = (100, 100, 7)
+        st.moves = [{"key": "9", "aoe": False, "effect": "buff/nevermiss", "pct": 100},
+                    {"key": "7", "aoe": True, "effect": "damage", "pct": 100}]
+        # 4 enemigos en pantalla, uno a distancia 4 (fuera de attack_range 3)
+        st.creatures = [Creature(cid=i, name=f"E{i}", pos=Vec3(100 + d, 100, 7), hp_pct=100,
+                                 kind=CreatureKind.MONSTER, is_wild=True)
+                        for i, d in enumerate([1, 2, 3, 4])]
+        cfg = {"enabled": True, "buff_on_screen": True, "buff_visible_min": 4,
+               "require_all_close": True, "attack_range": 3, "ready_pct": 100, "cooldown": 0.0}
+        cfg.update(kw)
+        cb = CombatBehavior(cfg, {})
+        inp = RecInput()
+        for _ in range(3):
+            if cb.evaluate(st, bb):
+                cb.act(st, bb, inp)
+        return inp.skills
+
+    assert "9" in skills(buff_gate="screen"), "screen: sale aunque haya uno lejos"
+    assert "9" not in skills(buff_gate="range"), "range: no sale con uno fuera de rango"
+    assert "9" not in skills(buff_gate="combat"), "combat: usa el gate de combate"
+    print("OK buff: buff_gate screen/range/combat")
 
 
 def test_revive_no_double_after_lag() -> None:
@@ -1064,6 +1120,7 @@ def main() -> int:
     test_capture_counts_once_per_corpse()
     test_buff_on_screen()
     test_buff_respects_gate()
+    test_buff_gate()
     test_lure_combo_custom()
     test_lure_idle_to_hold()
     test_lure_hold_requires_all_in_range()
@@ -1079,6 +1136,7 @@ def main() -> int:
     test_loot_yields_when_revive_urgent()
     test_revive_only_when_in_range_cleared()
     test_revive_stun_bypass()
+    test_revive_no_stun_only_trigger()
     test_revive_exhausted_fallback()
     test_revive_no_double_after_lag()
     test_gate_ignores_far_enemy()

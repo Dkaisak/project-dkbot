@@ -96,6 +96,9 @@ class Creature:
     shiny: bool = False
     uid: str = ""
     ignored: bool = False
+    skull: int = 0
+    emblem: int = 0
+    clan: str = ""
 
     @property
     def attackable(self) -> bool:

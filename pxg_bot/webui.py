@@ -33,6 +33,7 @@ CONTENT_TYPES = {
     ".js": "application/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
     ".ico": "image/x-icon",
+    ".png": "image/png",
 }
 
 
@@ -54,6 +55,34 @@ def _tail(path: str, n: int) -> list[str]:
         return [line.rstrip("\n") for line in lines[-max(1, n):]]
     except OSError:
         return []
+
+
+def _size(path: str):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def _tail_jsonl(path: str, n: int) -> list[dict]:
+    """Ultimas `n` lineas JSON de un fichero .jsonl (lee solo el final)."""
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 128 * 1024))
+            data = handle.read().decode("utf-8", "ignore")
+    except OSError:
+        return []
+    out = []
+    for line in [ln for ln in data.splitlines() if ln.strip()][-max(1, n):]:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
 
 
 def _count_enemies(state: dict) -> int:
@@ -86,6 +115,7 @@ class Dashboard:
 
     def _apply_cfg(self, cfg: dict) -> None:
         self.cfg = cfg
+        self._clan_cache = None
         ui = cfg.get("ui", {})
         lua = cfg.get("lua", {})
         self.host = ui.get("host", "127.0.0.1")
@@ -238,8 +268,28 @@ class Dashboard:
             "nearby": state.get("nearby", []),
             "server_msgs": state.get("server_msgs", []),
             "control": control,
+            "llm": status.get("llm") or {},
+            "telemetry": self._telemetry_status(status),
             "ts": time.time(),
         }
+
+    def _telemetry_status(self, status: dict) -> dict:
+        tel = dict(status.get("telemetry") or {})
+        if not tel:
+            return {"enabled": False}
+        base = tel.get("dir") or (os.path.dirname(self.state_file) if self.state_file else "")
+        tel["trace_bytes"] = _size(os.path.join(base, "pxg_trace.jsonl")) if base else None
+        tel["deaths_bytes"] = _size(os.path.join(base, "pxg_deaths.jsonl")) if base else None
+        return tel
+
+    def deaths(self, tail: int = 10) -> dict:
+        status = _read_json(self.status_file)
+        tel = status.get("telemetry") or (self.cfg.get("telemetry") or {})
+        base = tel.get("dir") or (os.path.dirname(self.state_file) if self.state_file else "")
+        path = os.path.join(base, "pxg_deaths.jsonl") if base else ""
+        keys = ("ts", "index", "signals", "level", "exp", "player_hp_pct", "chosen", "pos")
+        recs = [{k: r.get(k) for k in keys} for r in _tail_jsonl(path, tail)]
+        return {"deaths": recs}
 
     def minimap(self):
         if self._minimap is None and self.minimap_file:
@@ -421,6 +471,17 @@ class Dashboard:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, **out}
 
+    def _clans(self):
+        table = getattr(self, "_clan_cache", None)
+        if table is None:
+            from .clans import ClanTable
+
+            path = (self.cfg.get("lua", {}) or {}).get("clans_file", "")
+            table = ClanTable(path)
+            self._clan_cache = table
+        table.maybe_reload()
+        return table
+
     def ignore(self) -> dict:
         data = _read_json(self.ignore_file)
         if not isinstance(data, dict):
@@ -437,15 +498,19 @@ class Dashboard:
         for b in (state.get("battle") or []):
             seen.setdefault(str(b.get("id", "")), b)
         creatures = []
+        clans = self._clans()
         for uid, c in seen.items():
             if not uid or uid == "0":
                 continue
             name = str(c.get("name", ""))
+            skull = c.get("skull")
             creatures.append({
                 "id": uid, "name": name, "outfit": c.get("outfit"),
                 "hp": c.get("hp"), "x": c.get("x"), "y": c.get("y"), "z": c.get("z"),
                 "monster": bool(c.get("monster")), "player": bool(c.get("player")),
                 "npc": bool(c.get("npc")),
+                "skull": skull,
+                "clan": clans.clan_for(skull) if skull else "",
                 "ignored": name in names or uid in ids,
             })
         creatures.sort(key=lambda c: (not c["monster"], c["name"]))
@@ -679,6 +744,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.app.pokemon_skills())
         elif path == "/api/ignore":
             self._json(self.app.ignore())
+        elif path == "/api/deaths":
+            try:
+                n = int((query.get("tail", ["10"])[0]) or 10)
+            except ValueError:
+                n = 10
+            self._json(self.app.deaths(n))
         else:
             self._static(path)
 

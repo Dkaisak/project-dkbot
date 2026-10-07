@@ -33,6 +33,9 @@ code, pre { font-family: ui-monospace, "JetBrains Mono", Consolas, Menlo, monosp
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .right { float: right; }
+.accent { color: var(--accent2); }
+.bad { color: var(--bad); }
+h4 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; }
 
 /* ---------- barra superior ---------- */
 .topwrap { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(8px); }

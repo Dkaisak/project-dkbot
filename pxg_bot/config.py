@@ -6,6 +6,8 @@ import os
 import sys
 from typing import Optional
 
+from .llm.config import DEFAULT_LLM
+
 IS_WINDOWS = sys.platform == "win32"
 
 # Nombre del proceso del cliente según plataforma. En Windows el ejecutable es
@@ -42,6 +44,7 @@ def _lua_paths(base: str) -> dict:
         "shiny_file": os.path.join(base, "pxg_shiny.json"),
         "pokemon_skills_file": os.path.join(base, "pxg_pokemon_skills.json"),
         "ignore_file": os.path.join(base, "pxg_ignore.json"),
+        "clans_file": os.path.join(base, "pxg_clans.json"),
         "routes_file": os.path.join(base, "pxg_routes.json"),
         "direction_map": {"0": 0, "1": 4, "2": 1, "3": 5, "4": 2, "5": 6, "6": 3, "7": 7},
     }
@@ -90,6 +93,25 @@ DEFAULT_UI = {
     "tray": {"enabled": True, "minimize_on_close": True},
 }
 
+# Telemetria de muertes (Fase 1: datos + post-mortem para aprender a no morir).
+DEFAULT_TELEMETRY = {
+    "enabled": False,
+    "dir": "",                      # vacio = junto al status_file (mydata)
+    "sample_secs": 0.25,
+    "window_secs": 30.0,
+    "trace": True,
+    "trace_max_mb": 50,
+    "death_cooldown_secs": 10.0,
+    "settle_secs": 1.0,
+    "exp_drop": True,               # la XP baja  (morir resta XP)
+    "level_drop": True,             # el nivel baja
+    "player_death": True,           # HP del jugador a 0
+    "alert_msg": True,              # mensaje de muerte en el chat
+    "pokemon_faint": True,          # un pokemon del equipo se debilita
+    "disconnect": True,
+    "alert_keywords": None,         # None = lista por defecto
+}
+
 DEFAULT_BEHAVIORS = {
     "crisis": {
         "enabled": True,
@@ -113,6 +135,8 @@ DEFAULT_BEHAVIORS = {
     "capture": {
         "enabled": True,
         "targets": [],
+        "names": [],
+        "exclude": [],
         "catch_all": False,
         "shiny_only": True,
         "hp_threshold": 30,
@@ -150,6 +174,7 @@ DEFAULT_BEHAVIORS = {
         "summon_grace_secs": 3.0,
         "buff_on_screen": True,
         "buff_visible_min": 3,
+        "buff_gate": "screen",
         "panic_hp": 25,
         "panic_hp_source": "summon",
         "panic_skills": "all",
@@ -260,6 +285,8 @@ def load_config(path: str) -> dict:
     raw["behaviors"] = deep_merge(DEFAULT_BEHAVIORS, raw.get("behaviors", {}))
     raw["lua"] = deep_merge(DEFAULT_LUA, raw.get("lua", {}))
     raw["ui"] = deep_merge(DEFAULT_UI, raw.get("ui", {}))
+    raw["telemetry"] = deep_merge(DEFAULT_TELEMETRY, raw.get("telemetry", {}))
+    raw["llm"] = deep_merge(DEFAULT_LLM, raw.get("llm", {}))
     raw.setdefault("offsets", {})
     return raw
 

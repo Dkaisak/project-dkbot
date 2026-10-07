@@ -26,6 +26,7 @@ class LuaBridge:
         self.shiny_file = cfg.get("shiny_file", "")
         self.pokemon_skills_file = cfg.get("pokemon_skills_file", "")
         self.ignore_file = cfg.get("ignore_file", "")
+        self.clans_file = cfg.get("clans_file", "")
         self.direction_map = {int(k): int(v) for k, v in cfg.get("direction_map", DEFAULT_DIRECTION_MAP).items()}
         self._last_mtime = 0.0
         self._cached: Optional[dict] = None
@@ -80,6 +81,10 @@ class LuaStateSource:
 
         self.ignore = IgnoreTable(bridge.ignore_file) if bridge.ignore_file else None
         self._last_ignore_save = 0.0
+        from .clans import ClanTable
+
+        clans_file = getattr(bridge, "clans_file", "")
+        self.clans = ClanTable(clans_file) if clans_file else None
 
     def read_state(self) -> GameState:
         data = self.bridge.read()
@@ -94,6 +99,7 @@ class LuaStateSource:
             hp=int(data.get("hp", 0)),
             max_hp=int(data.get("maxhp", 0)),
             level=int(data.get("level", 0)),
+            exp=int(data.get("exp", 0) or 0),
             direction=ot_to_our(int(data.get("dir", 0))),
             alive=int(data.get("hp", 0)) > 0,
         )
@@ -118,6 +124,15 @@ class LuaStateSource:
             uid = str(c.get("id", "") or "")
             name = c.get("name", "")
             ignored = bool(self.ignore is not None and self.ignore.is_ignored(name, uid))
+            try:
+                skull = int(c.get("skull") or 0)
+            except (TypeError, ValueError):
+                skull = 0
+            try:
+                emblem = int(c.get("emblem") or 0)
+            except (TypeError, ValueError):
+                emblem = 0
+            clan = self.clans.clan_for(skull) if self.clans is not None else ""
             creatures.append(
                 Creature(
                     cid=cid,
@@ -132,6 +147,9 @@ class LuaStateSource:
                     outfit=c.get("outfit"),
                     uid=uid,
                     ignored=ignored,
+                    skull=skull,
+                    emblem=emblem,
+                    clan=clan,
                 )
             )
 
