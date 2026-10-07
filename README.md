@@ -16,6 +16,9 @@ Objetivo: farmear (pelear, lotear, capturar shinies, revivir, resetear
 cooldowns), siguiendo una **ruta dibujada por el usuario** o explorando, con un
 toque "humano" para no parecer un bot.
 
+Extras opcionales: **capa de decisión con LLM** (§21), **telemetría de muertes**
+para aprender a no morir (§22) y **detección de clanes** por el `skull` (§23).
+
 **Restricción clave del proyecto:** no se usa `xdotool`/X11 para el movimiento
 ni los clics normales (todo va por Lua). **Ni `order` ni `revive` usan X11**:
 `order` se resuelve por coordenadas (`tileToScreen` + `getMapThingByMousePosition`
@@ -80,7 +83,9 @@ comandos se drena de forma **atómica** (`rename` + lectura) para no perder
    `evaluate(state)` devuelve `True` ejecuta su `act(state)` y se detiene el
    tick.
 5. El humano (humanizer) puede meter micro-pausas aleatorias entre acciones.
-6. Se escribe `status_file` (estado del bot) y se duerme `tick_seconds`.
+6. `telemetry.observe(...)` graba la muestra (y el episodio, si hay muerte; §22).
+   La capa LLM se alimenta aparte con `llm.observe(...)` (§21).
+7. Se escribe `status_file` (estado del bot) y se duerme `tick_seconds`.
 
 El tick por defecto es **0.05 s**. La lectura del `state_file` se **cachea por
 `mtime`**: el agente lo reescribe cada ~200 ms, así que el bot no reparsea el
@@ -118,6 +123,9 @@ JSON en los ticks intermedios.
 `Creature.attackable` decide si una criatura es atacable (no self/npc/summon/
 ignorada, hp>0, monstruo o salvaje). `Vec3.distance` usa **Chebyshev** (max de
 Δx,Δy).
+
+Cada `Creature` incluye además `outfit`, `uid`, `shiny`, `ignored`, `skull` y
+`emblem` (insignia de clan; ver §23) y `clan` (resuelto con `pxg_clans.json`).
 
 ---
 
@@ -440,19 +448,22 @@ Endpoints:
 - `GET /api/state`, `/api/log`, `/api/config`, `/api/world`, `/api/otmm`,
   `/api/otmm/info`, `/api/route`, `/api/routes`, `/api/pokemon_skills`,
   `/api/ignore`, `/api/deaths`
-- `POST /api/bot` (start/stop), `/api/command`, `/api/control`, `/api/config`,
-  `/api/route`, `/api/routes`, `/api/routes/delete`,
-  `/api/pokemon_skills/order`, `/api/pokemon_skills/lure_order`, `/api/ignore`
+- `POST /api/bot` (start/stop), `/api/attach`, `/api/command`, `/api/control`,
+  `/api/config`, `/api/route`, `/api/routes`, `/api/routes/delete`,
+  `/api/pokemon_skills/order`, `/api/pokemon_skills/lure_order`,
+  `/api/pokemon_skills/delete`, `/api/ignore`
 
 Tarjetas principales: estado, control (start/stop/pausa/panic), toggles de
 behaviors (crisis/combat/loot/revive/explore; **sin curación**), ajustes de
 combate (lure min, en rango, rango ataque, rango engage, HP pánico,
-skill lista %, solo todos a rango, idle inicio), **Equipo**
+skill lista %, solo todos a rango, idle inicio), **Buff** (enemigos mínimos y
+**gate**: en pantalla / todos a rango / gate de combate), **Captura (balls)**
+(ítem, rango y filtro `names`/`exclude` por nombre), **Equipo**
 (slots con HP y activo, y selector del Pokémon de la ruta, que se saca al
 iniciarla), mapa real (base otmm, pan/zoom, transitabilidad), editor de ruta,
 **Skills / combo del lure** (orden por Pokémon + skills marcadas para cada lure,
 y **✕** para borrar del catálogo; el Pokémon activo se resalta y no se puede
-borrar) e **Ignorar criaturas**. Pestaña **IA**: tarjetas de **decisión del LLM**
+borrar) e **Ignorar criaturas** (cada jugador muestra su `[clan]` y `skull`). Pestaña **IA**: tarjetas de **decisión del LLM**
 (estado/modelo/consultas/decisión actual) y **telemetría de muertes** (contador,
 tamaño de los ficheros y últimas muertes con sus señales; ver §21/§22). El panel
 lee la `party` del estado **en tiempo real** (slots con HP y
@@ -468,8 +479,8 @@ skills, pokestops, lures), tomados del `status_file`.
 
 - `process_name`, `settings` (`tick_seconds`, `state_source`, humanizer…),
   `lua` (rutas de los ficheros de estado/cmd/control/world/shiny/routes/
-  pokemon_skills/ignore/minimap), `llm` (capa de decisión con LLM; ver §21) y
-  `telemetry` (captura de muertes para aprender; ver §22).
+  pokemon_skills/ignore/clans/minimap), `llm` (capa de decisión con LLM; ver §21)
+  y `telemetry` (captura de muertes para aprender; ver §22).
 - `behaviors`: `crisis`, `healing`, `capture`, `combat`, `loot`, `revive`,
   `summon`, `route`, `explore` (ver §5 para el detalle de cada uno).
 
@@ -609,6 +620,13 @@ Otros subcomandos: `scan`, `pointer`, `dump`, `procs`.
 - **Curación** (`healing`) deshabilitada: sus teclas aún no están implementadas.
 - Algunos umbrales (revive, loot, combate) son heurísticos y afinables por
   config.
+- **Cambios de código** Python se aplican al **arrancar el bot** (el proceso los
+  carga al inicio); los del **agente Lua** requieren **re-inyectar** (botón
+  *Atachar*).
+- **Clanes**: el `skull → clan` no lo traduce el cliente; la tabla
+  `pxg_clans.json` se completa observando (§23).
+- **Capa LLM** y **telemetría** son opcionales: sin sus dependencias o API key el
+  bot funciona igual, con la política clásica (§21/§22).
 
 ---
 
