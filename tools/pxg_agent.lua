@@ -1138,7 +1138,7 @@ local function snapshot()
       local ok, cc = pcall(function() return g_game.getControllingCreature() end)
       return ok and cc and tostring(cc:getName()) or ""
     end)(),
-    creatures = {}, nearby = {}, battle = {}, moves = {}, bag = {},
+    creatures = {}, nearby = {}, battle = {}, moves = {}, bag = {}, bag_counts = {},
     nav_result = tostring(PXG_LAST_NAV or ""),
     last_cmd = tostring(PXG_LAST_CMD or ""),
     is_walking = (function()
@@ -1360,7 +1360,13 @@ local function snapshot()
       if oi and items then
         for _, it in ipairs(items) do
           local oid, id = pcall(function() return it:getId() end)
-          if oid and id then st.bag[#st.bag + 1] = id end
+          if oid and id then
+            st.bag[#st.bag + 1] = id
+            local okn, n = pcall(function() return it:getCount() end)
+            n = (okn and tonumber(n)) or 1
+            if n < 1 then n = 1 end
+            st.bag_counts[id] = (st.bag_counts[id] or 0) + n
+          end
         end
       end
     end

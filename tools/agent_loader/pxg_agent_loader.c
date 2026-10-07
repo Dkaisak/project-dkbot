@@ -270,35 +270,49 @@ static void run_agent(void) {
            (void *)text, text_size);
     logmsg("gettop=%p loadbuffer=%p pcall=%p", (void *)gettop, (void *)loadbuf, (void *)pcall);
 
-    if (!gettop) {
-        logmsg("ERROR: firma de lua_gettop no encontrada; no es el cliente esperado. Abortando.");
-        return;
-    }
     if (!loadbuf) loadbuf = base + PXG_RVA_LUA_LOADBUFFER;
     if (!pcall) pcall = base + PXG_RVA_LUA_PCALL;
 
-    void *stub = NULL;
-    DWORD ptids[512];
-    int pn = 0;
-    suspend_others(ptids, 512, &pn);
-    int hook_ok = install_gettop_hook(gettop, &stub);
-    resume_threads(ptids, pn);
-    if (!hook_ok) {
-        logmsg("ERROR: no se pudo instalar el hook de lua_gettop");
+    lua_State *L = NULL;
+    if (gettop) {
+        void *stub = NULL;
+        DWORD ptids[512];
+        int pn = 0;
+        suspend_others(ptids, 512, &pn);
+        int hook_ok = install_gettop_hook(gettop, &stub);
+        resume_threads(ptids, pn);
+        if (!hook_ok) {
+            logmsg("ERROR: no se pudo instalar el hook de lua_gettop");
+            return;
+        }
+        logmsg("hook de lua_gettop instalado (stub=%p) parche=%02X %02X %02X %02X %02X %02X %02X %02X",
+               stub, gettop[0], gettop[1], gettop[2], gettop[3],
+               gettop[4], gettop[5], gettop[6], gettop[7]);
+        /* Esperar a que el cliente llame a lua_gettop y capture L. */
+        for (int i = 0; i < 200 && g_L == NULL; i++) Sleep(50);
+        L = (lua_State *)g_L;
+    } else {
+        /* Ya hay un hook de una inyeccion previa. El parche de lua_gettop
+         * (E9 rel32) apunta al stub, cuya 1a instruccion es `movabs rax,&g_L`.
+         * Leemos L de ahi -> recargar el agente SIN reiniciar el cliente. */
+        uint8_t *cand = base + PXG_RVA_LUA_GETTOP;
+        if (cand[0] == 0xE9) {
+            int32_t rel = 0;
+            memcpy(&rel, cand + 1, 4);
+            uint8_t *st = cand + 5 + rel;
+            if (st[0] == 0x48 && st[1] == 0xB8) {
+                uint64_t gaddr = 0;
+                memcpy(&gaddr, st + 2, 8);
+                L = *(lua_State **)(uintptr_t)gaddr;
+                logmsg("hook previo detectado (stub=%p); lua_State=%p", (void *)st, (void *)L);
+            }
+        }
+    }
+    if (L == NULL) {
+        logmsg("ERROR: no se pudo obtener lua_State (cliente no esperado o hook no reconocido)");
         return;
     }
-    logmsg("hook de lua_gettop instalado (stub=%p) parche=%02X %02X %02X %02X %02X %02X %02X %02X",
-           stub, gettop[0], gettop[1], gettop[2], gettop[3],
-           gettop[4], gettop[5], gettop[6], gettop[7]);
-
-    /* Esperar a que el cliente llame a lua_gettop y capture L. */
-    for (int i = 0; i < 200 && g_L == NULL; i++) Sleep(50);
-    if (g_L == NULL) {
-        logmsg("ERROR: no se capturo lua_State (timeout)");
-        return;
-    }
-    lua_State *L = (lua_State *)g_L;
-    logmsg("lua_State capturado: %p", (void *)L);
+    logmsg("lua_State: %p", (void *)L);
 
     size_t src_len = 0;
     char *src = read_file(g_agent, &src_len);

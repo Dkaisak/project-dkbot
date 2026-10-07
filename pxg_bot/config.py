@@ -185,6 +185,8 @@ DEFAULT_BEHAVIORS = {
         "enabled": True,
         "slot": 3,
         "item": 2269,
+        "disconnect_when_out": True,
+        "logout_key": "F12",
         "min_interval_secs": 8.0,
         "on_stun": True,
         "click_delay": 0.15,

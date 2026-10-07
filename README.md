@@ -237,6 +237,11 @@ Condiciones para revivir (resetear cooldowns / revivir):
 | **D** | `in_range > 0`, sin stun, con skills listas | — | **no revive** (sigue casteando) |
 
 Extras:
+- **Sin revives → desconectar** (`revive.disconnect_when_out`): al llegar a **0
+  revives** (ítem `revive.item`, por defecto 2269), el bot pulsa la tecla de
+  logout (`revive.logout_key`, F12), pausa y **se detiene**. Cuenta los revives
+  desde `bag_counts` del agente (requiere el backpack abierto); si no hay datos
+  fiables, no actúa. Editable en la GUI (tarjeta *Revive*).
 - **Sin doble revive (guarda de recuperación)**: tras completar una secuencia, no
   arranca otra hasta que el estado del juego confirme que surtió efecto
   (`revive_ready`: Pokémon **vivo** y **combo sin cooldowns**). Evita el doble

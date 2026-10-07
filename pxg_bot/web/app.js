@@ -215,6 +215,15 @@ function renderState(s) {
   if (buffon && document.activeElement !== buffon && combat.buff_on_screen != null) buffon.checked = !!combat.buff_on_screen;
   const buffmin = document.getElementById("buffmin");
   if (buffmin && document.activeElement !== buffmin && combat.buff_visible_min != null) buffmin.value = combat.buff_visible_min;
+  const rev = (s.control && s.control.revive) || {};
+  const revSlot = document.getElementById("rev-slot");
+  if (revSlot && document.activeElement !== revSlot && rev.slot != null) revSlot.value = rev.slot;
+  const revItem = document.getElementById("rev-item");
+  if (revItem && document.activeElement !== revItem && rev.item != null) revItem.value = rev.item;
+  const revOut = document.getElementById("rev-out");
+  if (revOut && document.activeElement !== revOut && rev.disconnect_when_out != null) revOut.checked = !!rev.disconnect_when_out;
+  const revKey = document.getElementById("rev-key");
+  if (revKey && document.activeElement !== revKey && rev.logout_key != null) revKey.value = rev.logout_key;
   const readypct = document.getElementById("readypct");
   if (document.activeElement !== readypct && combat.ready_pct != null) readypct.value = combat.ready_pct;
   const skillcd = document.getElementById("skillcd");
@@ -743,6 +752,22 @@ function wire() {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { buff_visible_min: n } });
   };
+  const revSlot = document.getElementById("rev-slot");
+  if (revSlot) revSlot.onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { revive: { slot: n } });
+  };
+  const revItem = document.getElementById("rev-item");
+  if (revItem) revItem.onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (n >= 1) api("/api/control", "POST", { revive: { item: n } });
+  };
+  const revOut = document.getElementById("rev-out");
+  if (revOut) revOut.onchange = (e) =>
+    api("/api/control", "POST", { revive: { disconnect_when_out: e.target.checked } });
+  const revKey = document.getElementById("rev-key");
+  if (revKey) revKey.onchange = (e) =>
+    api("/api/control", "POST", { revive: { logout_key: (e.target.value || "F12") } });
   document.getElementById("readypct").onchange = (e) => {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { ready_pct: n } });

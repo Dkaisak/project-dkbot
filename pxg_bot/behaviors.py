@@ -1129,6 +1129,22 @@ class ReviveBehavior(Behavior):
                 return p.hp_pct
         return None
 
+    def revives_left(self, state: GameState):
+        """Cantidad de revives (item configurado) segun el inventario. Devuelve
+        None si no hay datos fiables (agente viejo o backpack cerrado), para no
+        desconectar por error."""
+        item = int(self.cfg.get("item", 2269))
+        bc = getattr(state, "bag_counts", None)
+        if bc:
+            val = bc.get(str(item))
+            if val is None:
+                val = bc.get(item)
+            try:
+                return int(val or 0)
+            except (TypeError, ValueError):
+                return None
+        return None
+
     # --- combate: rango, combo, stun ---
     def _attack_range(self) -> int:
         if self.cfg.get("use_attack_range", True):

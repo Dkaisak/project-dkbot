@@ -636,6 +636,22 @@ def test_panic_source_and_skills() -> None:
     print("OK panico: origen de HP (summon/active/min) y skills (all/everything/combo)")
 
 
+def test_revives_left() -> None:
+    """revives_left lee bag_counts (id->cantidad); None si no hay datos fiables."""
+    rb = ReviveBehavior({"item": 2269}, {})
+    st = make_state()
+    st.bag_counts = {"2269": 5, "123": 2}
+    assert rb.revives_left(st) == 5, rb.revives_left(st)
+    st.bag_counts = {"123": 2}
+    assert rb.revives_left(st) == 0, rb.revives_left(st)
+    st.bag_counts = {}
+    assert rb.revives_left(st) is None, rb.revives_left(st)
+    # clave numerica (sin pasar por JSON)
+    st.bag_counts = {2269: 3}
+    assert rb.revives_left(st) == 3, rb.revives_left(st)
+    print("OK revives_left (cuenta desde bag_counts, None si no fiable)")
+
+
 def test_aoe_cast_order_respects_combo() -> None:
     bb = Blackboard()
     st = make_state()
@@ -1068,6 +1084,7 @@ def main() -> int:
     test_gate_ignores_far_enemy()
     test_gate_strict_requires_all_in_range()
     test_panic_source_and_skills()
+    test_revives_left()
     test_aoe_cast_order_respects_combo()
     test_shiny_observe()
     test_crisis_disabled()

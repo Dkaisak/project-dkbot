@@ -184,6 +184,22 @@
           </div>
           <div id="party" class="party"></div>
         </section>
+
+        <section class="card">
+          <h3>Revive</h3>
+          <div class="field"><label>Slot</label>
+            <input type="number" id="rev-slot" class="mini" min="1" max="6" value="3" />
+            <span class="muted small">slot a revivir (si no hay Pokémon de ruta)</span></div>
+          <div class="field"><label>Ítem</label>
+            <input type="number" id="rev-item" class="mini" min="1" max="999999" value="2269" />
+            <span class="muted small">id del ítem de revive</span></div>
+          <label class="switch"><input type="checkbox" id="rev-out" checked />
+            <span>Desconectar al quedarse sin revives</span></label>
+          <div class="field"><label>Tecla logout</label>
+            <input type="text" id="rev-key" class="mini" value="F12" />
+            <span class="muted small">tecla de desconexión</span></div>
+          <div class="muted small">Al llegar a 0 revives: pulsa la tecla, pausa y <b>detiene el bot</b>.</div>
+        </section>
       </div>
     </section>
 

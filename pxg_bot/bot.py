@@ -100,6 +100,8 @@ class Bot:
         self._manage_pause(state)
         # urgencia de revive: si el pokemon de la ruta esta debilitado, revive manda
         self.bb.notes["revive_urgent"] = self._revive_is_urgent(state)
+        # sin revives -> logout + detener (proactivo, en cuanto llega a 0)
+        self._check_revives_out(state)
         if not (self.bb.paused or self.control_paused):
             self.bb.update_corpses(state)
         chosen = None
@@ -158,6 +160,11 @@ class Bot:
             for behavior in self.behaviors:
                 if behavior.name == "combat":
                     behavior.cfg.update(combat)
+        revive = data.get("revive")
+        if isinstance(revive, dict) and revive:
+            for behavior in self.behaviors:
+                if behavior.name == "revive":
+                    behavior.cfg.update(revive)
         route = data.get("route")
         if isinstance(route, dict) and route.get("waypoints") is not None:
             self._apply_route(route)
@@ -209,6 +216,34 @@ class Bot:
         if rb is None:
             return False
         return rb.urgent(state, self.bb)
+
+    def _check_revives_out(self, state) -> None:
+        """Si se acaban los revives -> logout y detener el bot.
+
+        Proactivo: en cuanto la cuenta llega a 0 (tras haber visto >0). Solo actua
+        si hay datos fiables de inventario (bag_counts) y el revive esta activo."""
+        if self.bb.notes.get("revives_out_done"):
+            return
+        rb = self._revive_behavior
+        if rb is None or not rb.cfg.get("enabled", True):
+            return
+        if not rb.cfg.get("disconnect_when_out", False):
+            return
+        left = rb.revives_left(state)
+        if left is None:
+            return  # sin datos fiables: no decidir
+        if left > 0:
+            self.bb.notes["revives_seen"] = max(int(self.bb.notes.get("revives_seen", 0)), int(left))
+            return
+        if int(self.bb.notes.get("revives_seen", 0)) <= 0:
+            return  # nunca vimos revives: no desconectar por si acaso
+        self.inp.press(str(rb.cfg.get("logout_key", "F12")))
+        self.bb.paused = True
+        self.bb.stop_reason = "sin revives"
+        self.bb.notes["revives_out_done"] = True
+        self.bb.notes["quit"] = True
+        if self.verbose:
+            print("[revive] sin revives -> logout y detener el bot")
 
     def _densify_route(self) -> None:
         """Sustituye los waypoints por el camino real (astar/otmm) para que la
@@ -330,6 +365,10 @@ class Bot:
                     continue
                 state, chosen = self.tick()
                 self.write_status(chosen, state)
+                if self.bb.notes.get("quit"):
+                    if self.verbose:
+                        print("[revive] deteniendo el bot")
+                    break
                 # mirar alrededor en idle (en vez de quedarse totalmente quieto)
                 if (
                     not busy

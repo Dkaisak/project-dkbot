@@ -458,7 +458,9 @@
       "post_mode": 3,
       "max_attempts": 3,
       "min_interval_secs": 8.0,
-      "on_stun": true
+      "on_stun": true,
+      "disconnect_when_out": true,
+      "logout_key": "F12"
     },
     "summon": {
       "enabled": true,

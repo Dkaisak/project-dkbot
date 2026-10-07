@@ -207,6 +207,7 @@ class LuaStateSource:
                 self.pokemon_skills.save()
                 self._last_skills_save = time.time()
         state.bag = data.get("bag", [])
+        state.bag_counts = data.get("bag_counts", {}) or {}
         state.server_msgs = data.get("server_msgs", [])
         state.defeated = data.get("defeated", [])
         fm = data.get("fight_mode")

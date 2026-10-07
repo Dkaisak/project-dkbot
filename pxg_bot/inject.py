@@ -69,6 +69,33 @@ def detect_mydata(pid: int):
         return None
 
 
+def is_module_loaded(pid: int, dll_path: str) -> bool:
+    """True si el DLL (por nombre) ya esta cargado en el proceso."""
+    try:
+        from .memory import (kernel32, MODULEENTRY32, TH32CS_SNAPMODULE,
+                             TH32CS_SNAPMODULE32, INVALID_HANDLE_VALUE)
+    except Exception:
+        return False
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
+    if snap == INVALID_HANDLE_VALUE:
+        return False
+    entry = MODULEENTRY32()
+    entry.dwSize = ctypes.sizeof(MODULEENTRY32)
+    target = os.path.basename(dll_path).lower()
+    found = False
+    try:
+        ok = kernel32.Module32First(snap, ctypes.byref(entry))
+        while ok:
+            name = entry.szModule.decode("latin-1", "ignore").lower()
+            if name == target:
+                found = True
+                break
+            ok = kernel32.Module32Next(snap, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snap)
+    return found
+
+
 def write_config(dll_path: str, agent: str, mydata: str, log: str, suspend: bool) -> str:
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(dll_path)), "pxg_agent_dll.json")
     cfg = {
@@ -156,9 +183,21 @@ def inject_agent(pid: int, dll: str = None, agent: str = None, mydata: str = Non
     if not mydata:
         return {"ok": False, "error": "no se detecto mydata"}
     log = log or os.path.join(mydata, "pxg_bot.log")
-    cfg_path = write_config(dll, agent, mydata, log, suspend)
-    res = inject(pid, dll)
+    # Si el DLL ya esta cargado, inyectar una COPIA con nombre unico para que
+    # DllMain vuelva a ejecutarse (recarga del agente sin reiniciar el cliente).
+    target_dll = dll
+    if is_module_loaded(pid, dll):
+        stem, ext = os.path.splitext(dll)
+        target_dll = f"{stem}_r{int(time.time())}{ext}"
+        try:
+            import shutil
+            shutil.copy2(dll, target_dll)
+        except OSError:
+            target_dll = dll
+    cfg_path = write_config(target_dll, agent, mydata, log, suspend)
+    res = inject(pid, target_dll)
     res["config"] = cfg_path
+    res["dll"] = target_dll
     res["mydata"] = mydata
     if res.get("ok") and verify:
         res["state_actualizado"] = verify_state(os.path.join(mydata, "pxg_bot_state.json"))
