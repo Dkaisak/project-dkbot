@@ -86,9 +86,15 @@ def is_enemy(c: Creature) -> bool:
     return c.attackable and not c.is_player
 
 
-def summon_near_tile(state: GameState, otmm, radius: int = 4):
-    """Devuelve el tile mas cercano al player cuyos 8 vecinos esten libres
-    (caminables en el otmm) y que no este ocupado por criaturas. None si no hay."""
+def summon_near_tile(state: GameState, otmm, radius: int = 4, enemies=None):
+    """Devuelve el tile valido para ordenar el ownsummon: 8 vecinos libres
+    (caminables en el otmm), no ocupado por criaturas y a >= 2 tiles del player
+    (nunca encima ni a 1). None si no hay ninguno.
+
+    Con `enemies` (lista de `Vec3`), ademas de acotar por radio se sesga el
+    destino hacia el lado donde esta la masa de enemigos (el tile valido mas
+    cercano a su centroide); sin enemigos, criterio clasico (el mas cercano al
+    player)."""
     if otmm is None or not getattr(otmm, "ready", False):
         return None
     p = state.player.pos
@@ -104,8 +110,16 @@ def summon_near_tile(state: GameState, otmm, radius: int = 4):
                     return False
         return True
 
+    # centroide de los enemigos: marca el "lado" hacia el que atraer al summon
+    cen = None
+    if enemies:
+        cen = (sum(e.x for e in enemies) / len(enemies),
+               sum(e.y for e in enemies) / len(enemies))
+
     # nunca a 1 tile del personaje (ni encima): minimo Chebyshev 2
     r_min = 2
+    best = None
+    best_key = None
     for r in range(r_min, max(r_min, radius) + 1):
         for dx in range(-r, r + 1):
             for dy in range(-r, r + 1):
@@ -120,9 +134,18 @@ def summon_near_tile(state: GameState, otmm, radius: int = 4):
                     continue
                 if not otmm.pathable(x, y, p.z):
                     continue
-                if free(x, y):
+                if not free(x, y):
+                    continue
+                if cen is None:
+                    # clasico: el primero valido = el mas cercano al player
                     return Vec3(x, y, p.z)
-    return None
+                cdx, cdy = x - cen[0], y - cen[1]
+                # mas cerca del centroide enemigo; empate -> mas cerca del player
+                key = (-(cdx * cdx + cdy * cdy), -r)
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best = Vec3(x, y, p.z)
+    return best
 
 
 class Behavior:
@@ -342,7 +365,14 @@ class CombatBehavior(Behavior):
                     bb.notes["lure_state"] = "resume"
                 return True
             if lstate == "hold":
-                if len(vis) < xmin:
+                # minimo comprometido al entrar en hold: `xmin` si se junto X, o
+                # el numero que hubiera si el hold vino forzado por el tope. Asi
+                # el hold del tope NO se cancela a si mismo en el tick siguiente.
+                wait = bool(bb.notes.get("lure_hold_wait"))
+                min_hold = int(bb.notes.get("lure_hold_min", xmin))
+                # el hold del tope ESPERA: solo cede si ya no queda ningun enemigo
+                # en pantalla. El normal cede si baja del minimo juntado.
+                if (len(vis) == 0) if wait else (len(vis) < min_hold):
                     bb.notes["lure_state"] = "resume"
                     return True
                 # pokestop solo cuando el summon llego al order Y todos a rango
@@ -350,8 +380,9 @@ class CombatBehavior(Behavior):
                     bb.notes["lure_state"] = "fight"
                     bb.notes["lure_pokestop"] = True
                     return True
-                # no se logro agrupar a todos -> abandonar y seguir la ruta
-                if time.time() - bb.notes.get("lure_hold_start", time.time()) > float(self.cfg.get("hold_timeout", 15.0)):
+                # el hold normal abandona por tiempo; el del tope sigue esperando
+                # (a que los de pantalla entren en rango: el panic ya salta arriba)
+                if not wait and time.time() - bb.notes.get("lure_hold_start", time.time()) > float(self.cfg.get("hold_timeout", 15.0)):
                     bb.notes["lure_state"] = "resume"
                 return True
             if lstate == "resume":
@@ -361,14 +392,18 @@ class CombatBehavior(Behavior):
             # junta X a tiempo, tambien pasa a hold (con lo que haya). El gate
             # estricto sigue decidiendo cuando castear.
             if len(vis) >= xmin:
-                return self._enter_hold(bb)
+                return self._enter_hold(bb, xmin)
             if len(vis) >= 1:
                 to = float(self.cfg.get("lure_gather_timeout", 10.0))
                 if to > 0:  # <= 0 = sin tope (camina hasta juntar X)
                     if not bb.notes.get("lure_gather_start"):
                         bb.notes["lure_gather_start"] = time.time()
                     elif time.time() - bb.notes["lure_gather_start"] >= to:
-                        return self._enter_hold(bb)
+                        # tope vencido sin juntar X: hold "con lo que haya" y, si
+                        # `lure_tope_wait`, quedarse esperando a que los de pantalla
+                        # entren en rango de ataque (sin abandonar por tiempo).
+                        return self._enter_hold(bb, len(vis),
+                                                wait=bool(self.cfg.get("lure_tope_wait", True)))
             else:
                 bb.notes.pop("lure_gather_start", None)
             return False  # seguir la ruta (lureando)
@@ -677,7 +712,12 @@ class CombatBehavior(Behavior):
         if bb.notes.get("lure_summon_done"):
             return
         otmm = getattr(self.world, "otmm", None) if self.world is not None else None
-        t = summon_near_tile(state, otmm, int(self.cfg.get("lure_summon_radius", 3)))
+        enemies = None
+        if self.cfg.get("lure_summon_toward_enemies", True):
+            # sesgar el destino hacia la masa de enemigos (el lado con mas) para
+            # que el summon se coloque entre el player y el grupo que se lurea
+            enemies = [c.pos for c in self._engaging_enemies(state)]
+        t = summon_near_tile(state, otmm, int(self.cfg.get("lure_summon_radius", 3)), enemies)
         if t is not None:
             inp.order(t)
             # el pokestop esperara a que el summon llegue a este tile
@@ -715,10 +755,22 @@ class CombatBehavior(Behavior):
         bb.notes["pokestop_n"] = int(bb.notes.get("pokestop_n", 0)) + 1
         bb.count("pokestop")
 
-    def _enter_hold(self, bb: Blackboard) -> bool:
-        """Pasa el lure a `hold` (parar+agrupar) y limpia las notas de la fase."""
+    def _enter_hold(self, bb: Blackboard, min_count: Optional[int] = None,
+                    wait: bool = False) -> bool:
+        """Pasa el lure a `hold` (parar+agrupar) y limpia las notas de la fase.
+
+        `min_count` es el minimo de enemigos que el hold exigira para seguir vivo:
+        `lure_visible_min` si se junto X, o lo que hubiera si el hold viene del
+        tope (`lure_gather_timeout`).
+
+        `wait=True` (hold del tope): NO abandona por tiempo; se queda parado
+        esperando a que los enemigos de pantalla entren en rango de ataque (o a
+        que se vayan todos, o a que dispare el panico)."""
         bb.notes["lure_state"] = "hold"
         bb.notes["lure_hold_start"] = time.time()
+        bb.notes["lure_hold_min"] = (int(min_count) if min_count
+                                     else int(self.cfg.get("lure_visible_min", 5)))
+        bb.notes["lure_hold_wait"] = bool(wait)
         bb.count("lure")
         for k in ("lure_summon_done", "lure_order_target", "lure_order_at",
                   "lure_stopped", "lure_pokestop", "lure_fight_lost",
@@ -745,7 +797,8 @@ class CombatBehavior(Behavior):
                 bb.notes["lure_state"] = "hold"
                 bb.notes["lure_hold_start"] = now
                 for k in ("lure_fight_lost", "lure_summon_done", "lure_order_target",
-                          "lure_order_at", "lure_stopped", "lure_pokestop"):
+                          "lure_order_at", "lure_stopped", "lure_pokestop",
+                          "lure_hold_wait"):
                     bb.notes.pop(k, None)
             return
         bb.notes.pop("lure_fight_lost", None)
@@ -858,7 +911,8 @@ class CombatBehavior(Behavior):
                 return
             for k in ("lure_state", "lure_resume_until", "lure_summon_done",
                       "lure_order_target", "lure_order_at", "lure_stopped",
-                      "lure_pokestop", "lure_fight_lost", "lure_hold_start"):
+                      "lure_pokestop", "lure_fight_lost", "lure_hold_start",
+                      "lure_hold_min", "lure_hold_wait"):
                 bb.notes.pop(k, None)
             return
         s = self.cfg
@@ -971,42 +1025,60 @@ class LootBehavior(Behavior):
     def _mark_looted(self, bb: Blackboard, cid: str) -> None:
         bb.notes.setdefault("looted_ids", set()).add(cid)
 
+    def _reset_phase(self, bb: Blackboard) -> None:
+        bb.notes["loot_phase_start"] = 0.0
+        bb.notes["loot_phase_elapsed"] = 0.0
+        bb.notes["loot_progress_at"] = 0.0
+        bb.notes["loot_progress_d"] = None
+        bb.notes["loot_prog_sig"] = None
+
     def _coverage(self, tx: int, ty: int, pending: list) -> int:
         return sum(1 for c in pending if max(abs(tx - c["x"]), abs(ty - c["y"])) <= 1)
 
-    def _best_coverage(self, pending: list) -> int:
+    @staticmethod
+    def _candidate_tiles(pending: list):
+        """Tiles que pueden cubrir algun cuerpo: la union de los 3x3 alrededor de
+        cada cuerpo. Cualquier tile con cobertura>0 esta ahi, asi que no hace
+        falta escanear toda la caja (que es enorme si los cuerpos estan lejos)."""
+        tiles = set()
+        for c in pending:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    tiles.add((c["x"] + dx, c["y"] + dy))
+        return sorted(tiles)
+
+    def _best_coverage(self, pending: list, walkable=None) -> int:
         if not pending:
             return 0
-        xs = [c["x"] for c in pending]
-        ys = [c["y"] for c in pending]
         best = 0
-        for x in range(min(xs) - 1, max(xs) + 2):
-            for y in range(min(ys) - 1, max(ys) + 2):
-                cov = self._coverage(x, y, pending)
-                if cov > best:
-                    best = cov
+        for (x, y) in self._candidate_tiles(pending):
+            if walkable is not None and not walkable(x, y):
+                continue
+            cov = self._coverage(x, y, pending)
+            if cov > best:
+                best = cov
         return best
 
-    def _best_tile(self, pending: list, pos: Vec3):
+    def _best_tile(self, pending: list, pos: Vec3, walkable=None):
         # tile que cubre mas cuerpos (Chebyshev 1); a igual cobertura, el mas
-        # cercano. Es el mismo criterio que bestCoverTile del agente.
+        # cercano. Es el mismo criterio que bestCoverTile del agente. `walkable`
+        # (opcional) descarta tiles no transitables: no fijar un destino en pared.
         if not pending:
             return None
-        xs = [c["x"] for c in pending]
-        ys = [c["y"] for c in pending]
         best = None
         best_cov = 0
         best_d = 1 << 30
-        for x in range(min(xs) - 1, max(xs) + 2):
-            for y in range(min(ys) - 1, max(ys) + 2):
-                cov = self._coverage(x, y, pending)
-                if cov <= 0:
-                    continue
-                d = max(abs(pos.x - x), abs(pos.y - y))
-                if cov > best_cov or (cov == best_cov and d < best_d):
-                    best_cov = cov
-                    best_d = d
-                    best = (x, y)
+        for (x, y) in self._candidate_tiles(pending):
+            if walkable is not None and not walkable(x, y):
+                continue
+            cov = self._coverage(x, y, pending)
+            if cov <= 0:
+                continue
+            d = max(abs(pos.x - x), abs(pos.y - y))
+            if cov > best_cov or (cov == best_cov and d < best_d):
+                best_cov = cov
+                best_d = d
+                best = (x, y)
         return best
 
     def _finalize(self, bb: Blackboard) -> None:
@@ -1024,8 +1096,7 @@ class LootBehavior(Behavior):
         pending[:] = [c for c in pending if c["id"] not in looted]
         bb.notes.pop("collect_rec", None)
         if not pending:
-            bb.notes["loot_phase_start"] = 0.0
-            bb.notes["loot_phase_elapsed"] = 0.0
+            self._reset_phase(bb)
 
     def _enemy_near(self, state: GameState) -> bool:
         # no caminar hacia cuerpos si hay un enemigo pegado (seguridad). Los
@@ -1043,37 +1114,43 @@ class LootBehavior(Behavior):
         self._finalize(bb)
         pending = self._pending(bb)
         if not pending:
-            bb.notes["loot_phase_start"] = 0.0
-            bb.notes["loot_phase_elapsed"] = 0.0
+            self._reset_phase(bb)
             bb.notes.pop("loot_nav_fp", None)
             return False
-        # timer de la fase de loot: cuenta desde que empieza a lootear de verdad.
-        # Al expirar, se abandona lo que quede y el bot retoma la ruta.
-        phase = bb.notes.get("loot_phase_start", 0.0)
-        if phase != 0.0:
-            elapsed = time.time() - phase
-            bb.notes["loot_phase_elapsed"] = elapsed
-            if elapsed > float(self.cfg.get("phase_secs", 10.0)):
-                for c in pending:
-                    self._mark_looted(bb, c["id"])
-                pending.clear()
-                bb.notes["loot_phase_start"] = 0.0
-                bb.notes["loot_phase_elapsed"] = 0.0
-                bb.notes.pop("loot_nav_fp", None)
-                return False
-        reach = int(self.cfg.get("reach", 20))
         px, py, pz = state.player.pos.x, state.player.pos.y, state.player.pos.z
+        # solo cuerpos del mismo piso. NO se descartan por lejos: se camina a
+        # ellos. `reach > 0` queda como tope opcional (0 = sin limite).
+        reach = int(self.cfg.get("reach", 0) or 0)
         pending[:] = [c for c in pending
-                      if c["z"] == pz and max(abs(px - c["x"]), abs(py - c["y"])) <= reach]
+                      if c["z"] == pz
+                      and (reach <= 0 or max(abs(px - c["x"]), abs(py - c["y"])) <= reach)]
         if not pending:
-            bb.notes["loot_phase_start"] = 0.0
-            bb.notes["loot_phase_elapsed"] = 0.0
+            self._reset_phase(bb)
             return False
-        # arranca el timer al empezar a lootear (adyacente o caminando). Ahora se
-        # camina a los cuerpos lejanos SIEMPRE, haya o no enemigos.
+        now = time.time()
         if bb.notes.get("loot_phase_start", 0.0) == 0.0:
-            bb.notes["loot_phase_start"] = time.time()
-            bb.notes["loot_phase_elapsed"] = 0.0
+            bb.notes["loot_phase_start"] = now
+            bb.notes["loot_progress_at"] = now
+        # la fase NO se mide como tiempo total: se abandona solo si se estanca
+        # `phase_secs` SIN progreso (no acercarse al cuerpo pendiente mas cercano
+        # ni cambiar el conjunto). Asi se camina a los cuerpos lejanos sin darse
+        # por vencido a mitad de camino, y a la vez no se persigue un cuerpo
+        # inalcanzable para siempre.
+        sig = tuple(sorted(c["id"] for c in pending))
+        dmin = min(max(abs(px - c["x"]), abs(py - c["y"])) for c in pending)
+        prev_d = bb.notes.get("loot_progress_d")
+        if sig != bb.notes.get("loot_prog_sig") or prev_d is None or dmin < prev_d:
+            bb.notes["loot_progress_at"] = now
+        bb.notes["loot_prog_sig"] = sig
+        bb.notes["loot_progress_d"] = dmin
+        bb.notes["loot_phase_elapsed"] = now - bb.notes["loot_phase_start"]
+        if now - bb.notes.get("loot_progress_at", now) > float(self.cfg.get("phase_secs", 10.0)):
+            for c in pending:
+                self._mark_looted(bb, c["id"])
+            pending.clear()
+            self._reset_phase(bb)
+            bb.notes.pop("loot_nav_fp", None)
+            return False
         return True
 
     def act(self, state: GameState, bb: Blackboard, inp) -> None:
@@ -1082,12 +1159,18 @@ class LootBehavior(Behavior):
             return
         px, py = state.player.pos.x, state.player.pos.y
         pz = pending[0]["z"]
+        wm = self.world
+        otmm = getattr(wm, "otmm", None) if wm is not None else None
+        walkable = None
+        if otmm is not None and getattr(otmm, "ready", False):
+            z0 = state.player.pos.z
+            walkable = lambda x, y: otmm.pathable(x, y, z0)
         cur = self._coverage(px, py, pending)
-        best = self._best_coverage(pending)
+        best = self._best_coverage(pending, walkable)
         enemy_near = self._enemy_near(state)
         bb.notes["loot_cur"] = cur
         bb.notes["loot_best"] = best
-        bb.notes["loot_bopt"] = self._best_tile(pending, state.player.pos)
+        bb.notes["loot_bopt"] = self._best_tile(pending, state.player.pos, walkable)
 
         # temporizador de atasco: se reinicia al movernos o cambiar el grupo
         sig = (best, tuple(sorted(c["id"] for c in pending)))
@@ -1115,15 +1198,14 @@ class LootBehavior(Behavior):
         since = time.time() - bb.notes.get("loot_nav_t", 0.0)
         if fp != bb.notes.get("loot_nav_fp") or since > float(self.cfg.get("resend_secs", 4.0)):
             # navegar con el astar del bot (otmm) al mejor tile de cobertura
-            target = self._best_tile(pending, state.player.pos)
+            target = self._best_tile(pending, state.player.pos, walkable)
             path = None
-            wm = self.world
-            otmm = getattr(wm, "otmm", None) if wm is not None else None
             if wm is not None and otmm is not None and getattr(otmm, "ready", False) and target:
                 path = wm.plan_to(state.player.pos, target[0], target[1])
             if path and len(path) > 1:
-                # camino real (otmm) -> navpath; el agente lo sigue con autoWalk
-                inp.walk_path(path[1:1 + 40], pz)
+                # camino real (otmm) -> navpath; el agente lo sigue con autoWalk.
+                # Se manda un tramo largo para no parar a mitad en cuerpos lejanos.
+                inp.walk_path(path[1:1 + 200], pz)
             elif len(bodies) == 1:
                 inp.stand_near(Vec3(bodies[0][0], bodies[0][1], pz))
             else:

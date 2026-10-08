@@ -157,7 +157,13 @@ salta.
     el contador arranca al aparecer el **primer enemigo** (`vis ≥ 1`) y se
     **resetea** al quedarte sin enemigos. Si vence el tope sin llegar a X, pasa a
     `hold` igualmente (con lo que haya); el gate estricto sigue decidiendo el
-    casteo. `lure_gather_timeout=0` = sin tope. Configurable en la GUI ("Lure tope").
+    casteo. En ese `hold` forzado el mínimo exigido pasa a ser el número que
+    hubiera (no X), así **no se cancela a sí mismo** en el tick siguiente y puede
+    pelear con lo que haya. Con **`lure_tope_wait`** (por defecto) ese `hold` del
+    tope **no abandona por tiempo**: se queda **parado esperando** a que los
+    enemigos de pantalla entren en **rango de ataque** (y pelea entonces); solo
+    cede si se van todos, y el **pánico** lo salta (ataca ya). `lure_gather_timeout=0`
+    = sin tope. Configurable en la GUI ("Lure tope" + "esperar a rango").
   - **hold**: para la navegación y ordena el ownsummon (`lure_summon`). **No
     ataca.** Pasa a `fight` cuando el ownsummon **llegó** al tile del `order`
     (a ≤ `summon_arrive_tolerance` tiles, o tras `summon_grace_secs` si no llega
@@ -178,7 +184,11 @@ salta.
   retrasaba mucho el buff si algún enemigo quedaba lejos.
 - **Summon en el lure** (`lure_summon`): en `hold` ordena el ownsummon a un tile
   con sus 8 vecinos libres (`lure_summon_radius`); el pokestop espera a que
-  llegue. Ver §5.6.
+  llegue. Con `lure_summon_toward_enemies` (**por defecto**) el destino se sesga
+  hacia el **lado donde está la masa de enemigos** (el tile válido más cercano a
+  su centroide, dentro del radio), para que el summon quede entre el player y el
+  grupo que se lurea; si lo desactivas, cae al criterio clásico (el tile válido
+  más cercano al player). Ver §5.6.
 - **Fight-mode** (`manage_fight_mode`): fuera del burst pone **Defensivo** (3) y
   al lanzar skills **Ofensivo** (1), con un pequeño delay (`fight_mode_delay`)
   antes del primer AoE para que el servidor aplique el modo.
@@ -221,14 +231,21 @@ salta.
 - Los cuerpos se cosechan **siempre** (`update_corpses`), independientes de la
   prioridad: el agente reporta cada derrotado un solo tick.
 - Elige el **tile óptimo** (cubre más cuerpos con Chebyshev 1; empate → el más
-  cercano).
+  cercano). El candidato se busca solo en los **3×3 alrededor de cada cuerpo**
+  (no en toda la caja: es barato aunque los cuerpos estén lejos) y, con otmm, se
+  **descartan los tiles no transitables** (no fija un destino en pared).
 - **Navega con el astar del bot (otmm)** al mejor tile y lo manda con `navpath`
   (camino real); si no hay otmm, cae a `standnear`/`standnearmany` del agente.
-- **Camina a cuerpos lejanos siempre**, haya o no enemigos.
+- **Camina a cuerpos lejanos siempre**, haya o no enemigos. `reach` (por defecto
+  **0 = sin límite**) es un tope de distancia opcional; con 0 **no se descarta
+  ningún cuerpo por lejos**.
 - Lootea con `g_game.collectLoot()` (recoge todos los cuerpos adyacentes de una
   vez).
-- **Timer de fase** (`phase_secs`, 10 s): desde que empieza a lootear; al
-  expirar abandona lo pendiente y retoma la ruta.
+- **Timer de fase por progreso** (`phase_secs`, 10 s): no cuenta el tiempo
+  total; solo abandona lo pendiente si se **estanca** ese tiempo **sin
+  progreso** (sin acercarse al cuerpo pendiente más cercano ni cambiar el
+  conjunto). Así se camina a los cuerpos lejanos sin rendirse a mitad de camino,
+  pero no se persigue un cuerpo inalcanzable para siempre.
 - El **tile del pokémon propio cuenta como caminable** para el loot.
 
 ### 5.3 Revive (`ReviveBehavior`)
@@ -322,6 +339,10 @@ sin cursor) → sacar (call slot)**. El **primer** revive de la sesión espera
   player cuyos **8 vecinos estén libres** (caminables en el otmm, sin criaturas)
   y lo ordena con **`order`**. El tile está **siempre a ≥ 2 tiles del personaje**
   (nunca encima ni a 1); `summon_near_tile` arranca el radio en 2.
+- **Sesgo a enemigos** (lure, `lure_summon_toward_enemies`): al ordenar durante
+  el `hold` del lure, entre los tiles válidos se elige el **más cercano al
+  centroide de los enemigos visibles** (empate → el más cercano al player), para
+  colocar al ownsummon del lado donde hay más enemigos.
 - `evaluate` actúa si el pokémon está lejos del player (`max_dist`) o sus
   vecinos no están libres, con un `interval_secs` mínimo.
 - El **lure** también lo usa antes de pelear (`combat.lure_summon`, ver §5.1).
@@ -458,8 +479,9 @@ behaviors (crisis/combat/loot/revive/explore; **sin curación**), ajustes de
 combate (lure min, en rango, rango ataque, rango engage, HP pánico,
 skill lista %, solo todos a rango, idle inicio), **Buff** (enemigos mínimos y
 **gate**: en pantalla / todos a rango / gate de combate), **Captura (balls)**
-(ítem, rango y filtro `names`/`exclude` por nombre), **Equipo**
-(slots con HP y activo, y selector del Pokémon de la ruta, que se saca al
+(ítem, rango y filtro `names`/`exclude` por nombre), **Loot** (pestaña propia:
+alcance, enemigo cerca, cadencia de recogida, gracia, atasco, reenvío y fase),
+**Equipo** (slots con HP y activo, y selector del Pokémon de la ruta, que se saca al
 iniciarla), mapa real (base otmm, pan/zoom, transitabilidad), editor de ruta,
 **Skills / combo del lure** (orden por Pokémon + skills marcadas para cada lure,
 y **✕** para borrar del catálogo; el Pokémon activo se resalta y no se puede

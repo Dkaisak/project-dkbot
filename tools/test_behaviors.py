@@ -112,6 +112,72 @@ def test_loot_no_duplicates() -> None:
     print("OK sin cuerpos duplicados")
 
 
+def test_loot_far_body_kept() -> None:
+    """Un cuerpo lejano NO se descarta: se camina a el (reach=0)."""
+    st = make_state(defeated=[{"id": "1", "name": "Rattata", "x": 125, "y": 100, "z": 7}])
+    bb = Blackboard()
+    bb.update_corpses(st)
+    loot = LootBehavior({"enabled": True, "reach": 0}, {})
+    assert loot.evaluate(st, bb) is True, "un cuerpo a 25 tiles debe seguir pendiente"
+    assert len(bb.notes["corpses_pending"]) == 1, "no debe descartarse por distancia"
+    # reach>0 sigue disponible como tope opcional
+    st2 = make_state(defeated=[{"id": "1", "name": "Rattata", "x": 125, "y": 100, "z": 7}])
+    bb2 = Blackboard()
+    bb2.update_corpses(st2)
+    loot2 = LootBehavior({"enabled": True, "reach": 20}, {})
+    assert loot2.evaluate(st2, bb2) is False, "con tope 20 no persigue a 25"
+    print("OK loot: cuerpo lejano no se descarta (reach=0); reach>0 es tope opcional")
+
+
+def test_loot_phase_progress() -> None:
+    """La fase no abandona mientras hay progreso; si se estanca, si."""
+    loot = LootBehavior({"enabled": True, "reach": 0, "phase_secs": 10.0}, {})
+    # sin progreso -> abandona
+    st = make_state(defeated=[{"id": "1", "name": "R", "x": 115, "y": 100, "z": 7}])
+    bb = Blackboard()
+    bb.update_corpses(st)
+    assert loot.evaluate(st, bb) is True
+    bb.notes["loot_progress_at"] = time.time() - 11.0
+    bb.notes["loot_progress_d"] = 15
+    assert loot.evaluate(st, bb) is False, "sin progreso tras phase_secs -> abandona"
+    assert not bb.notes["corpses_pending"]
+    # con progreso (te acercas) aunque pase > phase_secs -> sigue
+    st2 = make_state(defeated=[{"id": "1", "name": "R", "x": 130, "y": 100, "z": 7}])
+    bb2 = Blackboard()
+    bb2.update_corpses(st2)
+    assert loot.evaluate(st2, bb2) is True
+    bb2.notes["loot_progress_at"] = time.time() - 11.0
+    bb2.notes["loot_progress_d"] = 30
+    st2.player.pos = Vec3(115, 100, 7)   # se acerco -> progreso
+    assert loot.evaluate(st2, bb2) is True, "con progreso no debe abandonar"
+    assert bb2.notes["corpses_pending"]
+    print("OK loot: fase por progreso (no abandona al acercarse; si al estancarse)")
+
+
+def test_loot_best_tile_walkable() -> None:
+    """_best_tile no fija un destino no transitable."""
+    loot = LootBehavior({"enabled": True}, {})
+    bodies = [{"id": "1", "name": "R", "x": 110, "y": 100, "z": 7}]
+    pos = Vec3(100, 100, 7)
+    assert loot._best_tile(bodies, pos) == (109, 99)
+    blocked = {(109, 99), (109, 100), (109, 101)}   # mejor lado -> pared
+    t = loot._best_tile(bodies, pos, lambda x, y: (x, y) not in blocked)
+    assert t is not None and (t[0], t[1]) not in blocked, f"eligio un tile bloqueado: {t}"
+    assert max(abs(t[0] - 110), abs(t[1] - 100)) <= 1, "debe seguir cubriendo el cuerpo"
+    print("OK loot: _best_tile evita tiles no transitables")
+
+
+def test_loot_best_tile_far_cluster() -> None:
+    """Con dos grupos, elige el que cubre mas cuerpos aunque este lejos."""
+    loot = LootBehavior({"enabled": True}, {})
+    bodies = [{"id": str(i), "name": "R", "x": x, "y": y, "z": 7}
+              for i, (x, y) in enumerate([(105, 100), (140, 100), (141, 100), (140, 101)])]
+    t = loot._best_tile(bodies, Vec3(100, 100, 7))
+    assert t is not None
+    assert max(abs(t[0] - 140), abs(t[1] - 100)) <= 1, f"deberia ir al grupo de 3: {t}"
+    print("OK loot: elige el grupo con mas cuerpos aunque este lejos")
+
+
 def test_capture_shiny_after_loot() -> None:
     bb = Blackboard()
     st = make_state()
@@ -371,6 +437,38 @@ def test_lure_summon_orders() -> None:
     assert all(mm.pathable(ox + dx, oy + dy, oz)
                for dx in (-1, 0, 1) for dy in (-1, 0, 1))
     print("OK lure: en hold para la ruta y ordena el ownsummon (vecinos libres)")
+
+
+def test_lure_summon_toward_enemies() -> None:
+    """El order del lure se sesga hacia la masa de enemigos, no solo al lado del player."""
+    st = make_state(px=100, py=100)
+    st.pokemon_pos = (105, 100, 7)
+    st.visible = {"w": 41, "h": 21}
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
+    # grupo de enemigos al ESTE del player
+    st.creatures = [Creature(cid=i, name=f"E{i}", pos=Vec3(110 + i, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, is_wild=True) for i in range(3)]
+
+    # con sesgo (por defecto): debe caer del lado de los enemigos (este)
+    cb = CombatBehavior({"lure_aoe": True, "lure_summon": True, "lure_summon_radius": 3,
+                         "lure_summon_toward_enemies": True}, {}, _FakeWorld())
+    inp = RecInput()
+    cb._lure_summon(st, Blackboard(), inp)
+    assert inp.orders, "debe ordenar el summon"
+    ox, oy, oz = inp.orders[0]
+    assert ox > 100, f"debe colocarse hacia los enemigos (este), no en {ox}"
+    assert max(abs(ox - 100), abs(oy - 100)) <= 3, "debe seguir dentro del radio"
+    assert all(_FakeOtmm().pathable(ox + dx, oy + dy, oz)
+               for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+
+    # sin sesgo: criterio clasico (primer tile valido, el mas cercano al player)
+    cb2 = CombatBehavior({"lure_aoe": True, "lure_summon": True, "lure_summon_radius": 3,
+                          "lure_summon_toward_enemies": False}, {}, _FakeWorld())
+    inp2 = RecInput()
+    cb2._lure_summon(st, Blackboard(), inp2)
+    ox2, oy2, oz2 = inp2.orders[0]
+    assert max(abs(ox2 - 100), abs(oy2 - 100)) == 2, "sin sesgo: primer tile valido (r=2)"
+    print("OK lure: el order del summon se sesga hacia la masa de enemigos")
 
 
 def test_shiny_observe() -> None:
@@ -990,6 +1088,29 @@ def test_lure_gather_timeout() -> None:
     bb.notes["lure_gather_start"] = time.time() - 11.0
     assert cb.evaluate(st, bb) is True, "pasados los 10s -> hold"
     assert bb.notes.get("lure_state") == "hold"
+    assert bb.notes.get("lure_hold_min") == 1, "el hold del tope compromete lo que habia"
+    # regresion: el hold del tope NO se cancela a si mismo en el tick siguiente
+    # (antes volvia a resume porque len(vis)<X, dejando el tope sin efecto)
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "hold", "el hold del tope debe persistir"
+    # con el summon llegado y el enemigo a rango -> fight "con lo que haya"
+    st.creatures[0].pos = Vec3(102, 100, 7)
+    bb.notes["lure_order_target"] = (100, 100, 7)
+    bb.notes["lure_order_at"] = time.time()
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "fight", "el hold del tope debe poder pelear"
+    # hold normal (>=X): si baja de X, sigue abandonando
+    st2 = make_state()
+    st2.pokemon_pos = (100, 100, 7)
+    st2.moves = st.moves
+    st2.creatures = [Creature(cid=i, name=f"E{i}", pos=Vec3(100 + i, 100, 7), hp_pct=100,
+                              kind=CreatureKind.MONSTER, is_wild=True) for i in range(5)]
+    bb5 = Blackboard()
+    assert cb.evaluate(st2, bb5) is True
+    assert bb5.notes.get("lure_hold_min") == 5
+    st2.creatures = st2.creatures[:4]
+    assert cb.evaluate(st2, bb5) is True
+    assert bb5.notes.get("lure_state") == "resume", "hold normal por debajo de X -> resume"
     # tope 0 = sin tope
     cb0 = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "lure_gather_timeout": 0}, {})
     bb0 = Blackboard()
@@ -1004,6 +1125,67 @@ def test_lure_gather_timeout() -> None:
     cb.evaluate(st0, bb2)
     assert bb2.notes.get("lure_gather_start") is None, "sin enemigos se resetea"
     print("OK lure: tope de tiempo (10s) pasa a hold; 0 = sin tope; se resetea sin enemigos")
+
+
+def test_lure_tope_wait() -> None:
+    """Tope vencido -> hold que ESPERA a que los de pantalla entren en rango, sin
+    abandonar por hold_timeout; cede si se van todos, y el panico lo salta."""
+    def scen(n=2, dist=6, pokemon_hp=None):
+        st = make_state()
+        st.pokemon_pos = (100, 100, 7)
+        st.pokemon_hp = pokemon_hp
+        st.visible = {"w": 41, "h": 21}
+        st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
+        st.creatures = [Creature(cid=i, name=f"E{i}", pos=Vec3(100 + dist + i, 100, 7), hp_pct=100,
+                                 kind=CreatureKind.MONSTER, is_wild=True) for i in range(n)]
+        return st
+
+    cb = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "lure_gather_timeout": 10.0,
+                         "lure_tope_wait": True, "attack_range": 3, "require_all_close": True,
+                         "hold_timeout": 1.0, "panic_hp": 25}, {})
+    st = scen(n=2, dist=6)                                   # 2 enemigos, fuera de rango
+    bb = Blackboard()
+    assert cb.evaluate(st, bb) is False                      # idle (< X)
+    bb.notes["lure_gather_start"] = time.time() - 11.0       # vence el tope
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "hold"
+    assert bb.notes.get("lure_hold_wait") is True
+    # aunque pase mucho mas que hold_timeout, SIGUE esperando
+    bb.notes["lure_hold_start"] = time.time() - 999
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "hold", "el hold del tope no debe abandonar por tiempo"
+    # los enemigos se acercan a rango -> fight
+    for c in st.creatures:
+        c.pos = Vec3(102, 100, 7)
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "fight"
+    # si se van todos -> resume
+    st2 = scen(n=2, dist=6)
+    bb2 = Blackboard()
+    bb2.notes.update(lure_state="hold", lure_hold_wait=True, lure_hold_min=2,
+                     lure_hold_start=time.time())
+    st2.creatures = []
+    assert cb.evaluate(st2, bb2) is True
+    assert bb2.notes.get("lure_state") == "resume", "sin enemigos -> resume"
+    # panico: ataca ya aunque esten lejos
+    st3 = scen(n=2, dist=6, pokemon_hp=5)
+    bb3 = Blackboard()
+    cb.evaluate(st3, bb3)
+    assert bb3.notes.get("lure_state") == "fight", "el panico debe atacar ya"
+    # con lure_tope_wait=False vuelve al hold con timeout
+    cb2 = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "lure_gather_timeout": 10.0,
+                          "lure_tope_wait": False, "attack_range": 3, "require_all_close": True,
+                          "hold_timeout": 1.0}, {})
+    st4 = scen(n=2, dist=6)
+    bb4 = Blackboard()
+    cb2.evaluate(st4, bb4)
+    bb4.notes["lure_gather_start"] = time.time() - 11.0
+    cb2.evaluate(st4, bb4)
+    assert bb4.notes.get("lure_state") == "hold"
+    bb4.notes["lure_hold_start"] = time.time() - 999
+    cb2.evaluate(st4, bb4)
+    assert bb4.notes.get("lure_state") == "resume", "sin wait, el hold abandona por timeout"
+    print("OK lure: el tope espera a que se acerquen a rango (el panico lo salta)")
 
 
 def test_aoe_cooldown_spacing() -> None:
@@ -1104,6 +1286,10 @@ def test_spec_id_parsing() -> None:
 def main() -> int:
     test_loot_adjacent()
     test_loot_no_duplicates()
+    test_loot_far_body_kept()
+    test_loot_phase_progress()
+    test_loot_best_tile_walkable()
+    test_loot_best_tile_far_cluster()
     test_capture_shiny_after_loot()
     test_capture_nonshiny_off()
     test_fight_mode_lure()
@@ -1115,6 +1301,7 @@ def main() -> int:
     test_summon_never_on_player()
     test_revive_waits_after_aoe()
     test_lure_summon_orders()
+    test_lure_summon_toward_enemies()
     test_capture_uses_lua_ball()
     test_capture_range()
     test_capture_counts_once_per_corpse()
@@ -1126,6 +1313,7 @@ def main() -> int:
     test_lure_hold_requires_all_in_range()
     test_lure_fight_returns_to_hold()
     test_lure_gather_timeout()
+    test_lure_tope_wait()
     test_aoe_cooldown_spacing()
     test_luabridge_state_cache()
     test_lure_summon_arrival_grace()

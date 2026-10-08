@@ -164,12 +164,14 @@ DEFAULT_BEHAVIORS = {
         "lure_aoe": True,
         "lure_visible_min": 5,
         "lure_gather_timeout": 10.0,
+        "lure_tope_wait": True,
         "lure_use_single": False,
         "hold_timeout": 15.0,
         "fight_recover_secs": 1.5,
         "resume_pause_secs": 1.0,
         "lure_summon": True,
         "lure_summon_radius": 3,
+        "lure_summon_toward_enemies": True,
         "summon_arrive_tolerance": 1,
         "summon_grace_secs": 3.0,
         "buff_on_screen": True,
@@ -198,7 +200,7 @@ DEFAULT_BEHAVIORS = {
     },
     "loot": {
         "enabled": True,
-        "reach": 20,
+        "reach": 0,          # 0 = sin limite (se camina a los cuerpos lejanos)
         "enemy_range": 3,
         "collect_interval": 1.0,
         "collect_grace": 0.7,

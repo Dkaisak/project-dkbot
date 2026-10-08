@@ -185,6 +185,11 @@ class Bot:
             for behavior in self.behaviors:
                 if behavior.name == "revive":
                     behavior.cfg.update(revive)
+        loot = data.get("loot")
+        if isinstance(loot, dict) and loot:
+            for behavior in self.behaviors:
+                if behavior.name == "loot":
+                    behavior.cfg.update(loot)
         route = data.get("route")
         if isinstance(route, dict) and route.get("waypoints") is not None:
             self._apply_route(route)

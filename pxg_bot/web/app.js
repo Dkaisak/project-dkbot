@@ -2,6 +2,15 @@
 
 /* ---------------- estado general ---------------- */
 const BEHAVIORS = ["crisis", "combat", "loot", "revive", "explore"];
+const LOOT_NUM_FIELDS = [
+  ["loot-reach", "reach"],
+  ["loot-enemy", "enemy_range"],
+  ["loot-collect", "collect_interval"],
+  ["loot-grace", "collect_grace"],
+  ["loot-stuck", "stuck_secs"],
+  ["loot-resend", "resend_secs"],
+  ["loot-phase", "phase_secs"],
+];
 let togglesBuilt = false;
 let logAutoScroll = true;
 let lastState = {};
@@ -269,6 +278,8 @@ function renderState(s) {
   if (document.activeElement !== aoemin && combat.lure_visible_min != null) aoemin.value = combat.lure_visible_min;
   const lureto = document.getElementById("lureto");
   if (document.activeElement !== lureto && combat.lure_gather_timeout != null) lureto.value = combat.lure_gather_timeout;
+  const lurewait = document.getElementById("lurewait");
+  if (lurewait && document.activeElement !== lurewait && combat.lure_tope_wait != null) lurewait.checked = !!combat.lure_tope_wait;
   const inrmin = document.getElementById("inrmin");
   if (document.activeElement !== inrmin && combat.cast_min_in_range != null) inrmin.value = combat.cast_min_in_range;
   const atkrange = document.getElementById("atkrange");
@@ -296,6 +307,11 @@ function renderState(s) {
   if (revOut && document.activeElement !== revOut && rev.disconnect_when_out != null) revOut.checked = !!rev.disconnect_when_out;
   const revKey = document.getElementById("rev-key");
   if (revKey && document.activeElement !== revKey && rev.logout_key != null) revKey.value = rev.logout_key;
+  const loot = (s.control && s.control.loot) || {};
+  for (const [id, key] of LOOT_NUM_FIELDS) {
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el && loot[key] != null) el.value = loot[key];
+  }
   const readypct = document.getElementById("readypct");
   if (document.activeElement !== readypct && combat.ready_pct != null) readypct.value = combat.ready_pct;
   const skillcd = document.getElementById("skillcd");
@@ -447,6 +463,15 @@ async function loadRouteIntoEditor() {
   document.getElementById("m-pp").checked = !!r.ping_pong;
   setRoutePokemon(r.pokemon, r.pokemon_slot);
   drawMap();
+}
+
+async function loadLootConfig() {
+  const cfg = await api("/api/config");
+  const loot = (cfg.behaviors && cfg.behaviors.loot) || {};
+  for (const [id, key] of LOOT_NUM_FIELDS) {
+    const el = document.getElementById(id);
+    if (el && loot[key] != null) el.value = loot[key];
+  }
 }
 
 async function refreshRoutes() {
@@ -820,6 +845,8 @@ function wire() {
     const n = parseInt(e.target.value, 10);
     if (n >= 0) api("/api/control", "POST", { combat: { lure_gather_timeout: n } });
   };
+  document.getElementById("lurewait").onchange = (e) =>
+    api("/api/control", "POST", { combat: { lure_tope_wait: e.target.checked } });
   document.getElementById("inrmin").onchange = (e) => {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { cast_min_in_range: n } });
@@ -875,6 +902,14 @@ function wire() {
   };
   document.getElementById("reqall").onchange = (e) =>
     api("/api/control", "POST", { combat: { require_all_close: e.target.checked } });
+  for (const [id, key] of LOOT_NUM_FIELDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.onchange = (e) => {
+      const n = parseFloat(e.target.value);
+      if (!isNaN(n) && n >= 0) api("/api/control", "POST", { loot: { [key]: n } });
+    };
+  }
   document.getElementById("idleen").onchange = (e) =>
     api("/api/control", "POST", { route_behavior: { start_idle_enabled: e.target.checked } });
   document.getElementById("idlesecs").onchange = (e) => {
@@ -892,6 +927,7 @@ function wire() {
 }
 
 wire();
+loadLootConfig();
 loadRouteIntoEditor();
 refreshRoutes();
 refreshPokemonSkills();

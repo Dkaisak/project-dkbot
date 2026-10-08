@@ -32,17 +32,18 @@
     </div>
 
     <div class="actions">
-      <button id="btn-attach" class="mini">Atachar</button>
-      <button id="btn-start" class="primary">Iniciar</button>
-      <button id="btn-stop" class="danger">Detener</button>
-      <button id="btn-pause">Pausar</button>
-      <button id="btn-panic" class="danger ghost">Pánico</button>
+      <button id="btn-attach" class="mini" title="Detecta el cliente, ajusta las rutas e inyecta el agente">Atachar</button>
+      <button id="btn-start" class="primary" title="Arranca el bot">Iniciar</button>
+      <button id="btn-stop" class="danger" title="Detiene el bot">Detener</button>
+      <button id="btn-pause" title="Pausa / reanuda el bot (sin detenerlo)">Pausar</button>
+      <button id="btn-panic" class="danger ghost" title="Para el bot y lo deja en pausa (botón de emergencia)">Pánico</button>
     </div>
   </header>
 
   <nav class="tabs">
     <button class="tab active" data-tab="panel">Panel</button>
     <button class="tab" data-tab="combate">Combate</button>
+    <button class="tab" data-tab="loot">Loot</button>
     <button class="tab" data-tab="equipo">Equipo</button>
     <button class="tab" data-tab="ruta">Ruta</button>
     <button class="tab" data-tab="skills">Skills</button>
@@ -80,44 +81,55 @@
 
         <section class="card">
           <h3>Captura (balls)</h3>
-          <div class="field"><label>Ball ítem</label>
+          <div class="muted small">Lanza una ball a los cuerpos derrotados (por Lua, sin mover el cursor).</div>
+          <div class="field"><label>Ítem de la ball</label>
             <input type="number" id="cap-item" class="mini" min="1" max="999999" value="2652" />
-            <span class="muted small">id del ítem</span></div>
-          <div class="field"><label>Rango</label>
+            <span class="muted small">id del objeto que se lanza (2652 = ball normal)</span></div>
+          <div class="field"><label>Distancia de lanzamiento</label>
             <input type="number" id="cap-range" class="mini" min="1" max="8" value="4" />
-            <span class="muted small">tiles desde donde lanzar</span></div>
-          <div class="field"><label>Solo nombres</label>
+            <span class="muted small">a cuántos tiles como máximo se lanza; si el cuerpo está más lejos, se acerca antes</span></div>
+          <div class="field"><label>Solo a estos Pokémon</label>
             <input type="text" id="cap-names" placeholder="Charmander, Dratini" />
-            <span class="muted small">lista por coma (vacío = shiny / todos)</span></div>
-          <div class="field"><label>Excluir</label>
+            <span class="muted small">nombres separados por comas. Si pones alguno, se lanza SOLO a esos (aunque no sean shiny). Vacío = solo shinies</span></div>
+          <div class="field"><label>Nunca lanzar a</label>
             <input type="text" id="cap-exclude" placeholder="Rattata" />
-            <span class="muted small">nunca lanzar a estos nombres</span></div>
+            <span class="muted small">nombres separados por comas que se ignoran siempre (tiene prioridad sobre la lista anterior)</span></div>
+          <label class="switch"><input type="checkbox" id="catchall" /><span>Lanzar a TODOS los derrotados (no solo shinies)</span></label>
         </section>
 
         <section class="card">
           <h3>Comportamientos</h3>
           <div id="behaviors" class="toggles"></div>
+          <div class="muted small" style="margin-top:10px; line-height:1.6">
+            <b>crisis</b>: pausa si te ve un jugador/GM o si la vida es crítica ·
+            <b>combat</b>: junta enemigos (lure) y pelea ·
+            <b>loot</b>: recoge los cuerpos ·
+            <b>revive</b>: revive/resetea el Pokémon ·
+            <b>explore</b>: explora y patrulla la zona
+          </div>
         </section>
 
         <section class="card">
           <h3>Exploración</h3>
-          <div class="field"><label>Home</label>
+          <div class="muted small">Cubre una zona cuando no hay una ruta dibujada.</div>
+          <div class="field"><label>Punto de partida</label>
             <div class="inline">
               <code id="home">—</code>
-              <button id="btn-home" class="mini">Fijar aquí</button>
-              <button id="btn-home-clear" class="mini ghost">Limpiar</button>
+              <button id="btn-home" class="mini" title="Usa tu posición actual como inicio de la exploración">Fijar aquí</button>
+              <button id="btn-home-clear" class="mini ghost" title="Borra el punto de partida">Limpiar</button>
             </div>
+            <span class="muted small">centro de la zona a explorar</span>
           </div>
-          <div class="field"><label>Radio</label>
+          <div class="field"><label>Radio de exploración</label>
             <input type="range" id="radius" min="10" max="200" step="5" value="60" />
             <span id="radius-txt" class="muted">60</span>
+            <span class="muted small">cuántos tiles alrededor del punto de partida se cubren</span>
           </div>
-          <label class="switch"><input type="checkbox" id="patrol" /><span>Patrulla</span></label>
-          <label class="switch"><input type="checkbox" id="catchall" /><span>Lanzar ball a todos los derrotados</span></label>
+          <label class="switch"><input type="checkbox" id="patrol" /><span>Patrullar en bucle cuando ya no queda zona nueva</span></label>
         </section>
 
         <section class="card span2">
-          <h3>Skills rápidas <span class="muted small">(clic = lanzar)</span></h3>
+          <h3>Skills rápidas <span class="muted small">(clic = lanzar la skill)</span></h3>
           <div id="skills" class="skills"></div>
         </section>
       </div>
@@ -128,71 +140,110 @@
       <div class="grid">
         <section class="card">
           <h3>Lure / objetivo</h3>
-          <div class="field"><label>Lure min</label>
+          <div class="muted small">Antes de pelear, el bot junta enemigos caminando por la ruta (el “lure”).</div>
+          <div class="field"><label>Lure: enemigos a juntar</label>
             <input type="number" id="aoemin" class="mini" min="1" max="20" value="5" />
-            <span class="muted small">enemigos visibles para lurear</span></div>
-          <div class="field"><label>Lure tope</label>
+            <span class="muted small">nº de enemigos visibles que intenta reunir antes de parar y pelear</span></div>
+          <div class="field"><label>Lure: tope de tiempo (s)</label>
             <input type="number" id="lureto" class="mini" min="0" max="120" value="10" />
-            <span class="muted small">s juntando enemigos (0 = sin tope)</span></div>
-          <div class="field"><label>En rango</label>
+            <span class="muted small">si no reúne ese nº en este tiempo, deja de juntar. 0 = sin tope (sigue juntando)</span></div>
+          <label class="switch"><input type="checkbox" id="lurewait" checked />
+            <span>Al vencer el tope: esperar a que los enemigos se acerquen a rango
+              <span class="muted small">(no ataca ni sigue la ruta; solo cede si se van todos o si entra el pánico)</span></span></label>
+          <div class="field"><label>En rango (mínimo)</label>
             <input type="number" id="inrmin" class="mini" min="1" max="20" value="2" />
-            <span class="muted small">a rango para castear</span></div>
-          <div class="field"><label>Rango ataque</label>
+            <span class="muted small">nº mínimo de enemigos a alcance para empezar a lanzar (cuando NO está activo “todos a rango”)</span></div>
+          <div class="field"><label>Rango de ataque</label>
             <input type="number" id="atkrange" class="mini" min="1" max="12" value="3" />
-            <span class="muted small">tiles del summon para pegar</span></div>
+            <span class="muted small">distancia (tiles) desde tu Pokémon a la que puede atacar</span></div>
           <div class="field"><label>Rango engage</label>
             <input type="number" id="engrange" class="mini" min="0" max="30" value="0" />
-            <span class="muted small">radio de enemigos que cuentan (0 = pantalla)</span></div>
+            <span class="muted small">solo cuenta enemigos dentro de este radio del Pokémon. 0 = todos los de la pantalla</span></div>
         </section>
 
         <section class="card">
           <h3>Casteo</h3>
-          <div class="field"><label>Skill lista %</label>
+          <div class="field"><label>Skill lista (%)</label>
             <input type="number" id="readypct" class="mini" min="1" max="100" value="100" />
-            <span class="muted small">cooldown para considerar la skill lista</span></div>
-          <div class="field"><label>Skill cada</label>
+            <span class="muted small">% de recarga a partir del cual la skill se considera lista (100 = solo cuando no tiene cooldown)</span></div>
+          <div class="field"><label>Intervalo entre skills (s)</label>
             <input type="number" id="skillcd" class="mini" min="0" max="3" step="0.05" value="0.3" />
-            <span class="muted small">s entre lanzamientos</span></div>
+            <span class="muted small">tiempo mínimo entre lanzar una skill y la siguiente</span></div>
           <label class="switch"><input type="checkbox" id="reqall" checked />
-            <span>Solo lanzar cuando todos estén a rango <span class="muted small">(salvo HP pánico)</span></span></label>
+            <span>Lanzar solo cuando TODOS los enemigos en pantalla estén a rango <span class="muted small">(salvo pánico por vida baja)</span></span></label>
         </section>
 
         <section class="card">
           <h3>Buff</h3>
           <label class="switch"><input type="checkbox" id="buffon" checked />
-            <span>Lanzar buff con enemigos en pantalla</span></label>
-          <div class="field"><label>Enemigos min</label>
+            <span>Lanzar la skill de buff cuando hay enemigos en pantalla</span></label>
+          <div class="muted small">El buff es una skill con efecto <code>buff</code> (p. ej. nevermiss). Se lanza <b>una vez</b> por oleada de enemigos.</div>
+          <div class="field"><label>Enemigos mínimos</label>
             <input type="number" id="buffmin" class="mini" min="1" max="20" value="3" />
-            <span class="muted small">nº de enemigos visibles para usar el buff</span></div>
-          <div class="field"><label>Gate</label>
+            <span class="muted small">nº de enemigos visibles necesarios para lanzar el buff</span></div>
+          <div class="field"><label>Cuándo puede salir</label>
             <select id="buffgate" class="mini">
-              <option value="screen">En pantalla (sin distancia)</option>
-              <option value="range">Todos a rango</option>
-              <option value="combat">Gate de combate</option>
+              <option value="screen">En pantalla (sin exigir distancia)</option>
+              <option value="range">Solo si todos están a rango</option>
+              <option value="combat">Usar la regla de combate</option>
             </select>
-            <span class="muted small">cuándo puede salir el buff</span></div>
-          <div class="muted small">El buff es una skill con efecto <code>buff</code> (p. ej. nevermiss) y se lanza <b>una vez</b> mientras haya enemigos.</div>
+            <span class="muted small">condición adicional para lanzarlo</span></div>
         </section>
 
         <section class="card">
-          <h3>Pánico <span class="muted small">(vida baja: lanza ya, saltándose el gate)</span></h3>
-          <div class="field"><label>Umbral HP %</label>
+          <h3>Pánico <span class="muted small">(vida baja: lanza ya, saltándose la regla de rango)</span></h3>
+          <div class="field"><label>Se dispara por debajo de (%)</label>
             <input type="number" id="panic" class="mini" min="1" max="100" value="25" />
-            <span class="muted small">se dispara con el HP a este % o menos</span></div>
-          <div class="field"><label>Origen del HP</label>
+            <span class="muted small">si la vida baja a este % o menos, ataca sin esperar a tener los enemigos a rango</span></div>
+          <div class="field"><label>Vida que vigila</label>
             <select id="panic-src" class="mini">
-              <option value="summon">Summon (pokémon propio)</option>
-              <option value="active">Pokémon activo (party)</option>
-              <option value="min">El menor de ambos</option>
+              <option value="summon">Pokémon propio (summon)</option>
+              <option value="active">Pokémon activo del equipo</option>
+              <option value="min">La más baja de las dos</option>
             </select>
-            <span class="muted small">qué vida se vigila para el pánico</span></div>
-          <div class="field"><label>Skills en pánico</label>
+            <span class="muted small">de qué Pokémon se mira la vida para el pánico</span></div>
+          <div class="field"><label>Skills que lanza</label>
             <select id="panic-skills" class="mini">
-              <option value="all">AoE + daño simple</option>
-              <option value="everything">Todas (incl. buff / no-daño)</option>
+              <option value="all">Área + daño simple</option>
+              <option value="everything">Todas (incluye buff y no-daño)</option>
               <option value="combo">Solo el combo configurado</option>
             </select>
-            <span class="muted small">qué lanza al entrar en pánico</span></div>
+            <span class="muted small">qué skills usa al entrar en pánico</span></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ============ LOOT ============ -->
+    <section class="pane" data-pane="loot">
+      <div class="grid">
+        <section class="card">
+          <h3>Loot <span class="muted small">(recoger cuerpos)</span></h3>
+          <div class="muted small">Recoge el botín de los enemigos derrotados, incluso si los cuerpos quedaron lejos.</div>
+          <div class="field"><label>Alcance (tiles)</label>
+            <input type="number" id="loot-reach" class="mini" min="0" max="999" step="1" value="0" />
+            <span class="muted small">distancia máxima a la que persigue un cuerpo. 0 = sin límite (va a por todos)</span></div>
+          <div class="field"><label>Seguridad: enemigo cerca</label>
+            <input type="number" id="loot-enemy" class="mini" min="0" max="30" step="1" value="3" />
+            <span class="muted small">no camina hacia los cuerpos si hay un enemigo a esta distancia o menos (pelea primero)</span></div>
+          <div class="field"><label>Recoger cada (s)</label>
+            <input type="number" id="loot-collect" class="mini" min="0" max="10" step="0.1" value="1" />
+            <span class="muted small">tiempo entre intentos de recoger los cuerpos que tiene al lado</span></div>
+        </section>
+
+        <section class="card">
+          <h3>Tiempos</h3>
+          <div class="field"><label>Espera tras recoger (s)</label>
+            <input type="number" id="loot-grace" class="mini" min="0" max="10" step="0.1" value="0.7" />
+            <span class="muted small">cuánto espera tras recoger antes de dar esos cuerpos por recogidos</span></div>
+          <div class="field"><label>Atasco (s)</label>
+            <input type="number" id="loot-stuck" class="mini" min="0" max="60" step="0.5" value="2.5" />
+            <span class="muted small">si en este tiempo no mejora su posición para cubrir más cuerpos, recoge donde está</span></div>
+          <div class="field"><label>Reenviar destino (s)</label>
+            <input type="number" id="loot-resend" class="mini" min="0" max="60" step="0.5" value="4" />
+            <span class="muted small">cada cuánto vuelve a enviar el destino de recogida (por si se pierde el camino)</span></div>
+          <div class="field"><label>Abandonar sin progreso (s)</label>
+            <input type="number" id="loot-phase" class="mini" min="0" max="600" step="1" value="10" />
+            <span class="muted small">si en este tiempo no logra acercarse a ningún cuerpo (p. ej. inalcanzable), deja de intentarlo y sigue la ruta</span></div>
         </section>
       </div>
     </section>
@@ -211,18 +262,18 @@
 
         <section class="card">
           <h3>Revive</h3>
-          <div class="field"><label>Slot</label>
+          <div class="muted small">Resetea los cooldowns / revive al Pokémon que trabaja en la ruta.</div>
+          <div class="field"><label>Slot del Pokémon</label>
             <input type="number" id="rev-slot" class="mini" min="1" max="6" value="3" />
-            <span class="muted small">slot a revivir (si no hay Pokémon de ruta)</span></div>
-          <div class="field"><label>Ítem</label>
+            <span class="muted small">slot que se reviva. Si eliges un Pokémon de ruta, se usa ese en su lugar</span></div>
+          <div class="field"><label>Ítem de revive</label>
             <input type="number" id="rev-item" class="mini" min="1" max="999999" value="2269" />
-            <span class="muted small">id del ítem de revive</span></div>
+            <span class="muted small">id del ítem que se usa para revivir (2269)</span></div>
           <label class="switch"><input type="checkbox" id="rev-out" checked />
-            <span>Desconectar al quedarse sin revives</span></label>
-          <div class="field"><label>Tecla logout</label>
+            <span>Si te quedas sin revives: logout, pausar y detener el bot</span></label>
+          <div class="field"><label>Tecla de logout</label>
             <input type="text" id="rev-key" class="mini" value="F12" />
-            <span class="muted small">tecla de desconexión</span></div>
-          <div class="muted small">Al llegar a 0 revives: pulsa la tecla, pausa y <b>detiene el bot</b>.</div>
+            <span class="muted small">tecla para cerrar sesión en el cliente (F12)</span></div>
         </section>
       </div>
     </section>
@@ -233,25 +284,26 @@
         <section class="card span2">
           <h3>Mapa <span class="muted small" id="mapinfo"></span></h3>
           <div class="mapctrls">
-            <button id="m-follow" class="mini">Seguir</button>
-            <button id="m-mode" class="mini">Ver: color</button>
-            <button id="m-zoomin" class="mini">+</button>
-            <button id="m-zoomout" class="mini">−</button>
+            <button id="m-follow" class="mini" title="Centrar el mapa en el jugador">Seguir</button>
+            <button id="m-mode" class="mini" title="Ver el color del minimapa o la transitabilidad (dónde se puede caminar)">Ver: color</button>
+            <button id="m-zoomin" class="mini" title="Acercar">+</button>
+            <button id="m-zoomout" class="mini" title="Alejar">−</button>
             <span class="sep"></span>
-            <button id="m-edit" class="mini">Dibujar ruta</button>
-            <button id="m-undo" class="mini ghost">Deshacer</button>
-            <button id="m-clear" class="mini ghost">Limpiar</button>
-            <button id="m-save" class="mini primary">Guardar ruta</button>
-            <label class="inline"><input type="checkbox" id="m-loop" checked> loop</label>
-            <label class="inline"><input type="checkbox" id="m-pp"> ping-pong</label>
+            <button id="m-edit" class="mini" title="Activa el modo dibujo: clic en el mapa añade waypoints">Dibujar ruta</button>
+            <button id="m-undo" class="mini ghost" title="Quita el último waypoint">Deshacer</button>
+            <button id="m-clear" class="mini ghost" title="Borra todos los waypoints">Limpiar</button>
+            <button id="m-save" class="mini primary" title="Guarda la ruta actual y la aplica al bot">Guardar ruta</button>
+            <label class="inline" title="Repetir la ruta en bucle"><input type="checkbox" id="m-loop" checked> loop</label>
+            <label class="inline" title="Ir y volver: al llegar al final, recorre la ruta al revés"><input type="checkbox" id="m-pp"> ping-pong</label>
           </div>
+          <div class="muted small">loop = repite la ruta en bucle · ping-pong = al llegar al final vuelve por el mismo camino</div>
           <div class="mapctrls">
-            <select id="m-routes" class="mini"></select>
-            <button id="m-load" class="mini">Cargar</button>
-            <button id="m-delete" class="mini ghost">Eliminar</button>
+            <select id="m-routes" class="mini" title="Rutas guardadas"></select>
+            <button id="m-load" class="mini" title="Carga la ruta seleccionada en el editor">Cargar</button>
+            <button id="m-delete" class="mini ghost" title="Elimina la ruta seleccionada">Eliminar</button>
             <span class="sep"></span>
             <input id="m-route-name" class="mini" placeholder="nombre de ruta" />
-            <button id="m-saveas" class="mini primary">Guardar como</button>
+            <button id="m-saveas" class="mini primary" title="Guarda la ruta actual con un nombre">Guardar como</button>
           </div>
           <canvas id="map" width="1200" height="680"></canvas>
           <div class="muted small" id="maproute">ruta: 0 waypoints</div>
@@ -259,11 +311,12 @@
 
         <section class="card span2">
           <h3>Idle de inicio</h3>
+          <div class="muted small">Espera opcional al volver al inicio de la ruta (después del primer loop).</div>
           <label class="switch"><input type="checkbox" id="idleen" checked />
-            <span>Esperar al volver al waypoint 0</span></label>
-          <div class="field"><label>Segundos</label>
+            <span>Esperar al llegar al waypoint 0 de la ruta</span></label>
+          <div class="field"><label>Espera (s)</label>
             <input type="number" id="idlesecs" class="mini" min="0" max="600" value="42" />
-            <span class="muted small">espera al volver al waypoint 0 (primer loop)</span></div>
+            <span class="muted small">segundos que espera al llegar al waypoint 0</span></div>
         </section>
       </div>
     </section>
@@ -285,6 +338,7 @@
       <div class="grid">
         <section class="card span2">
           <h3>Ignorar criaturas <button id="ign-refresh" class="mini ghost right">refrescar</button></h3>
+          <div class="muted small">Nombres o ids de criaturas que el bot no atacará. Se aprende solo cuando atacas a algo que no pierde vida (NPC).</div>
           <div id="ign" class="psk"></div>
           <div id="ign-info" class="muted small"></div>
         </section>
@@ -296,6 +350,7 @@
       <div class="grid">
         <section class="card span2">
           <h3>Decisión LLM <span class="muted small" id="llm-state"></span></h3>
+          <div class="muted small">Capa opcional: un modelo elige entre combat / route / explore. El resto de behaviors siguen siendo deterministas.</div>
           <div class="stats">
             <div class="stat"><span class="k">Estado</span><b id="llm-avail">—</b></div>
             <div class="stat"><span class="k">Modelo</span><b id="llm-model">—</b></div>
@@ -310,6 +365,7 @@
 
         <section class="card span2">
           <h3>Telemetría de muertes <span class="muted small" id="tel-state"></span></h3>
+          <div class="muted small">Datos guardados para aprender a no morir (no decide nada, solo registra).</div>
           <div class="stats">
             <div class="stat"><span class="k">Muertes</span><b id="tel-deaths">0</b></div>
             <div class="stat"><span class="k">Trace</span><b id="tel-trace">—</b></div>
@@ -328,7 +384,7 @@
     <section class="pane" data-pane="log">
       <div class="grid">
         <section class="card span2">
-          <h3>Registro <button id="btn-log-clear" class="mini ghost right">auto-scroll</button></h3>
+          <h3>Registro <button id="btn-log-clear" class="mini ghost right" title="Activa o desactiva el desplazamiento automático al final">auto-scroll</button></h3>
           <pre id="log" class="log"></pre>
         </section>
       </div>
