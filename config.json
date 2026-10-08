@@ -466,9 +466,9 @@
       "enabled": true,
       "reach": 0,
       "enemy_range": 3,
-      "collect_interval": 1.0,
+      "collect_interval": 0.5,
       "collect_grace": 0.7,
-      "confirm_timeout": 1.5,
+      "confirm_timeout": 0.8,
       "stuck_secs": 2.5,
       "resend_secs": 4,
       "phase_secs": 10.0

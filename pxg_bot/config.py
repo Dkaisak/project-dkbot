@@ -203,9 +203,9 @@ DEFAULT_BEHAVIORS = {
         "enabled": True,
         "reach": 0,          # 0 = sin limite (se camina a los cuerpos lejanos)
         "enemy_range": 3,
-        "collect_interval": 1.0,
+        "collect_interval": 0.5,
         "collect_grace": 0.7,
-        "confirm_timeout": 1.5,
+        "confirm_timeout": 0.8,
         "stuck_secs": 2.5,
         "resend_secs": 4.0,
         "phase_secs": 10.0,

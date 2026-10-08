@@ -1607,8 +1607,11 @@ class RouteBehavior(Behavior):
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
         if bb.paused or not self.cfg.get("enabled", True) or self.route is None:
             return False
-        # revivir es obligatorio antes de retomar la ruta
-        if bb.notes.get("revive_pending"):
+        # solo ceder mientras hay una secuencia de revive EN CURSO. El combo en
+        # cooldown (`revive_pending`) NO debe parar la ruta: revive (prioridad 80
+        # > ruta 10) ya preempta cuando le toca. Antes la ruta quedaba en IDLE
+        # hasta que el revive cumplia su intervalo (varios segundos sin avanzar).
+        if bb.notes.get("revive_rec"):
             return False
         return True
 
