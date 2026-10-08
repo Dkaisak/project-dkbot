@@ -1,7 +1,7 @@
 -- Agente Lua PXG v3: estado + comandos. Cancela su tick anterior al reejecutarse.
 -- `PXG_DIR` lo inyecta el loader (DLL en Windows / attach en Linux). Usar
 -- SIEMPRE barras normales: Lua 5.1 trata `\U`, `\P`... como escapes invalidos.
-local DIR = _G.PXG_DIR or "/home/dkaisak/Descargas/pxg-linux/mydata"
+local DIR = _G.PXG_DIR or "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata"
 DIR = DIR:gsub("\\", "/")
 local STATE = DIR .. "/pxg_bot_state.json"
 local CMD = DIR .. "/pxg_bot_cmd.txt"
@@ -1098,6 +1098,68 @@ local function exec(line)
       end
     end
     res = table.concat(parts, " ")
+  elseif op == "lua" then
+    -- lua <codigo> : ejecuta Lua arbitrario (diagnostico). Uso: `lua return 1+1`.
+    -- El codigo es una sola linea; devuelve el valor de retorno del chunk.
+    local code = arg
+    local loader = loadstring
+    if type(loader) ~= "function" then loader = load end
+    local f, lerr = nil, nil
+    if type(loader) == "function" then f, lerr = loader(code) end
+    if type(f) ~= "function" then
+      res = "lua-nofunc err=" .. tostring(lerr) .. " arglen=" .. #code
+            .. " arg=[" .. code .. "] ls=" .. tostring(type(loadstring))
+            .. " ld=" .. tostring(type(load))
+    else
+      local p = { pcall(f) }
+      res = "lua ok=" .. tostring(p[1]) .. " nret=" .. tostring(#p - 1)
+            .. " r=" .. tostring(p[2]) .. " arglen=" .. #code
+    end
+  elseif op == "get" then
+    -- get <a.b.c> : resuelve la ruta y devuelve su tipo y valor
+    local cur = _G
+    for part in tostring(arg):gmatch("[^%.]+") do
+      if cur == nil then break end
+      cur = cur[tonumber(part) or part]
+    end
+    res = "get[" .. tostring(arg) .. "]=" .. type(cur) .. " " .. tostring(cur)
+  elseif op == "call" then
+    -- call <a.b.c> : llama a la funcion (sin args) y devuelve el resultado
+    local cur = _G
+    for part in tostring(arg):gmatch("[^%.]+") do
+      if cur == nil then break end
+      cur = cur[tonumber(part) or part]
+    end
+    if type(cur) ~= "function" then
+      res = "call[" .. tostring(arg) .. "] notfunc:" .. type(cur)
+    else
+      local ok, r = pcall(cur)
+      res = "call[" .. tostring(arg) .. "] ok=" .. tostring(ok) .. " ret=" .. tostring(r)
+    end
+  elseif op == "callm" then
+    -- callm <a.b.method> : llama al metodo pasando la tabla padre como self
+    local path = tostring(arg)
+    local parent, method = path:match("^(.*)%.([^%.]+)$")
+    if not parent then
+      res = "callm bad-path"
+    else
+      local cur = _G
+      for part in parent:gmatch("[^%.]+") do
+        if cur == nil then break end
+        cur = cur[tonumber(part) or part]
+      end
+      if type(cur) ~= "table" and type(cur) ~= "userdata" then
+        res = "callm[" .. path .. "] no-parent:" .. type(cur)
+      else
+        local fn = cur[method]
+        if type(fn) ~= "function" then
+          res = "callm[" .. path .. "] notfunc:" .. type(fn)
+        else
+          local ok, r = pcall(fn, cur)
+          res = "callm[" .. path .. "] ok=" .. tostring(ok) .. " ret=" .. tostring(r)
+        end
+      end
+    end
   elseif op == "luaver" then
     res = "lua=" .. tostring(_VERSION)
   elseif op == "proto" then
@@ -1134,9 +1196,13 @@ end
 
 local function snapshot()
   local lp = g_game.getLocalPlayer()
-  if not lp then return { connected = false } end
+  if not lp then
+    -- sin jugador (login/selector): publicar igualmente la ultima salida de
+    -- comando para poder diagnosticar/actuar fuera del juego.
+    return { connected = false, last_cmd = tostring(PXG_LAST_CMD or "") }
+  end
   local p = lp:getPosition()
-  if not p then return { connected = false } end
+  if not p then return { connected = false, last_cmd = tostring(PXG_LAST_CMD or "") } end
   local st = {
     connected = true, name = lp:getName(),
     hp = lp:getHealth(), maxhp = lp:getMaxHealth(), hppct = lp:getHealthPercent(),

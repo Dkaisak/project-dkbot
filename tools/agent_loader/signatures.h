@@ -22,10 +22,10 @@
 #include <stddef.h>
 
 /* RVAs de referencia (por si la firma no se encontrara). */
-#define PXG_RVA_LUA_GETTOP      0x0A29C30u
-#define PXG_RVA_LUA_PCALL       0x0A32380u
-#define PXG_RVA_LUA_LOADBUFFER  0x0A33A40u
-#define PXG_RVA_LUA_LOAD        0x0A33230u
+#define PXG_RVA_LUA_GETTOP      0x0A2AC30u
+#define PXG_RVA_LUA_PCALL       0x0A33380u
+#define PXG_RVA_LUA_LOADBUFFER  0x0A34A40u
+#define PXG_RVA_LUA_LOAD        0x0A34230u
 
 /* --- Firmas (bytes exactos del build de referencia) --- */
 
