@@ -202,12 +202,19 @@ class LuaStateSource:
         if self.ignore is not None and time.time() - self._last_ignore_save > 10:
             self.ignore.save()
             self._last_ignore_save = time.time()
-        state = GameState(player=player, creatures=creatures, timestamp=time.time())
+        state = GameState(player=player, creatures=creatures,
+                          timestamp=float(getattr(self.bridge, "_last_mtime", 0.0) or 0.0))
         state.in_battle = bool(data.get("attacking")) or any(c.kind == CreatureKind.MONSTER for c in creatures)
         state.attacking_name = data.get("attacking_name", "")
         state.is_walking = bool(data.get("is_walking", False))
         state.spawn_blocked = bool(data.get("spawn_blocked", False))
         state.captured = bool(data.get("captured", False))
+        cv = data.get("captures")
+        state.captures = int(cv) if isinstance(cv, (int, float)) else -1
+        state.capture_name = str(data.get("capture_name", "") or "")
+        lv = data.get("loots")
+        state.loots = int(lv) if isinstance(lv, (int, float)) else -1
+        state.loot_msg = str(data.get("loot_msg", "") or "")
         state.active_pokemon_name = str(data.get("active_pokemon", "") or "")
         state.moves = data.get("moves", [])
         state.party = [

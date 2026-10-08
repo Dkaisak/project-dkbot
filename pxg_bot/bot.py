@@ -10,6 +10,7 @@ from . import control as control_io
 from .behaviors import Blackboard, build_behaviors
 from .humanizer import Humanizer
 from .models import CreatureKind, GameState, Player, Vec3
+from .notify import Notifier
 from .pathfinding import Route
 
 
@@ -33,6 +34,7 @@ class Bot:
         self._densify_route()
         self.llm = self._build_llm(cfg)
         self.telemetry = self._build_telemetry(cfg)
+        self.notifier = self._build_notifier(cfg)
         self.behaviors = build_behaviors(cfg, route, self.world, llm=self.llm)
         self._revive_behavior = next((b for b in self.behaviors if b.name == "revive"), None)
         self._orig_enabled = {b.name: b.cfg.get("enabled", True) for b in self.behaviors}
@@ -70,6 +72,9 @@ class Bot:
         from .telemetry import Telemetry
 
         return Telemetry(cfg)
+
+    def _build_notifier(self, cfg: dict):
+        return Notifier(cfg)
 
     def _build_world(self, cfg: dict):
         base = self.status_file or self.control_file or ""
@@ -118,6 +123,8 @@ class Bot:
             self.llm.observe(state, self._llm_extra())
         # urgencia de revive: si el pokemon de la ruta esta debilitado, revive manda
         self.bb.notes["revive_urgent"] = self._revive_is_urgent(state)
+        # capturas confirmadas (contador del agente)
+        self._count_captures(state)
         # sin revives -> logout + detener (proactivo, en cuanto llega a 0)
         self._check_revives_out(state)
         if not (self.bb.paused or self.control_paused):
@@ -143,6 +150,7 @@ class Bot:
                     print(f"[!] {behavior.name}: {exc}")
         if self.telemetry is not None:
             self.telemetry.observe(state, chosen, self.bb)
+        self.notifier.observe(state, self.bb)
         self.ticks += 1
         self.last_chosen = chosen
         return state, chosen
@@ -190,6 +198,9 @@ class Bot:
             for behavior in self.behaviors:
                 if behavior.name == "loot":
                     behavior.cfg.update(loot)
+        telegram = data.get("telegram")
+        if isinstance(telegram, dict) and telegram:
+            self.notifier.set_config(telegram)
         route = data.get("route")
         if isinstance(route, dict) and route.get("waypoints") is not None:
             self._apply_route(route)
@@ -241,6 +252,35 @@ class Bot:
         if rb is None:
             return False
         return rb.urgent(state, self.bb)
+
+    def _count_captures(self, state) -> None:
+        """Cuenta capturas confirmadas (manuales o del propio bot).
+
+        Preferente: delta del contador monotono del agente (`state.captures`).
+        Fallback (agente antiguo, `captures < 0`): pulso `state.captured`,
+        deduplicado por el mtime del snapshot (`state.timestamp`)."""
+        if not getattr(state, "connected", False):
+            return
+        cur = int(getattr(state, "captures", -1))
+        name = str(getattr(state, "capture_name", "") or "")
+        if cur >= 0:
+            seen = int(self.bb.notes.get("captures_seen", 0))
+            if cur < seen:
+                seen = 0  # el agente se reinicio (contador a 0)
+            if cur > seen:
+                n = cur - seen
+                self.bb.count("captured", n)
+                self.notifier.capture(name, n)
+            self.bb.notes["captures_seen"] = cur
+            return
+        if not getattr(state, "captured", False):
+            return
+        ts = getattr(state, "timestamp", 0.0)
+        if ts and ts == self.bb.notes.get("captured_ts"):
+            return
+        self.bb.notes["captured_ts"] = ts
+        self.bb.count("captured")
+        self.notifier.capture(name, 1)
 
     def _check_revives_out(self, state) -> None:
         """Si se acaban los revives -> logout y detener el bot.
@@ -321,6 +361,7 @@ class Bot:
             "counters": dict(self.bb.counters),
             "llm": self.llm.status() if self.llm is not None else {"enabled": False},
             "telemetry": self.telemetry.status() if self.telemetry is not None else {"enabled": False},
+            "telegram": self.notifier.status(),
             "updated": time.time(),
         }
         try:
@@ -426,6 +467,7 @@ class Bot:
                 self.llm.stop()
             if self.telemetry is not None:
                 self.telemetry.close()
+            self.notifier.close()
             if self.world is not None:
                 self.world.save()
             self._remove_pid()

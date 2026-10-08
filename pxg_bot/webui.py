@@ -112,10 +112,13 @@ class Dashboard:
         self._log_handle = None
         self.lock = threading.Lock()
         self._apply_cfg(load_config(cfg_path))
+        self._ui_stop = threading.Event()
+        self._start_ui_watch()
 
     def _apply_cfg(self, cfg: dict) -> None:
         self.cfg = cfg
         self._clan_cache = None
+        self.process_name = str(cfg.get("process_name", "") or "")
         ui = cfg.get("ui", {})
         lua = cfg.get("lua", {})
         self.host = ui.get("host", "127.0.0.1")
@@ -133,17 +136,141 @@ class Dashboard:
         self.ignore_file = lua.get("ignore_file", "")
         self.pid_file = os.path.join(os.path.dirname(self.status_file), "pxg_bot.pid") if self.status_file else ""
 
-    def attach_client(self) -> dict:
-        """Detecta el cliente, ajusta rutas e inyecta el agente (boton GUI)."""
+    def attach_client(self, process_name: str | None = None) -> dict:
+        """Detecta el cliente, ajusta rutas e inyecta el agente (boton GUI).
+
+        `process_name` (opcional): ejecutable del cliente elegido en la GUI
+        (`pxgme.exe` en Windows, `pxgme-linux` en Linux). Cadena vacia = modo
+        automatico (segun la plataforma). Si se pasa (aunque sea vacio) se guarda
+        en config.json antes de atachar, para alternar Windows/Linux sin editar
+        el fichero a mano.
+        """
         from . import setup
 
         with self.lock:
-            process = self.cfg.get("process_name") or setup.DEFAULT_PROCESS
-            res = setup.attach(self.cfg_path, process_name=process, install=True)
+            if process_name is not None:
+                self._save_process_name(str(process_name).strip())
+                self._apply_cfg(load_config(self.cfg_path))
+            chosen = self.process_name or setup.DEFAULT_PROCESS
+            res = setup.attach(self.cfg_path, process_name=chosen, install=True)
             if res.get("ok"):
                 self._apply_cfg(load_config(self.cfg_path))
                 self._minimap = None
             return res
+
+    def _save_process_name(self, name: str) -> bool:
+        """Escribe `process_name` (y `module_name`) en config.json preservando la
+        estructura del fichero (no reescribe offsets/_doc como `patch_config`)."""
+        try:
+            with open(self.cfg_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        # admitir una ruta pegada: el cliente se localiza por nombre de exe
+        name = str(name or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+        data["process_name"] = name
+        if name:
+            data["module_name"] = name
+        try:
+            tmp = self.cfg_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, ensure_ascii=False)
+            os.replace(tmp, self.cfg_path)
+            return True
+        except OSError:
+            return False
+
+    def set_process_name(self, name: str) -> dict:
+        """Guarda el ejecutable del cliente elegido (sin atachar)."""
+        with self.lock:
+            ok = self._save_process_name(str(name or "").strip())
+            if ok:
+                self._apply_cfg(load_config(self.cfg_path))
+            return {"ok": ok, "process_name": self.process_name}
+
+    def processes(self) -> dict:
+        """Lista procesos que parecen clientes de PokeXGames (para el selector).
+
+        Enumera todos los procesos y filtra por nombre en local: en Windows
+        `list_processes(query)` solo hace match exacto, asi que no vale pasarle
+        un fragmento.
+        """
+        from .memory import list_processes
+
+        needles = ("pxg", "pokexgames")
+        found = []
+        seen = set()
+        for pid, exe in list_processes(None):
+            low = exe.lower()
+            if not any(n in low for n in needles):
+                continue
+            if exe in seen:
+                continue
+            seen.add(exe)
+            found.append({"pid": pid, "name": exe})
+        found.sort(key=lambda p: p["name"].lower())
+        return {"processes": found, "current": self.process_name}
+
+    # --- telegram ---
+    def telegram(self) -> dict:
+        """Config de avisos + estado en vivo (del status_file)."""
+        cfg = load_config(self.cfg_path)
+        tg = cfg.get("telegram", {}) or {}
+        status = _read_json(self.status_file).get("telegram") or {}
+        return {"config": tg, "status": status}
+
+    def _save_telegram(self, patch: dict) -> bool:
+        """Escribe la seccion `telegram` en config.json conservando el resto."""
+        try:
+            with open(self.cfg_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        from .config import deep_merge
+        from .notify import DEFAULT_TELEGRAM
+
+        current = data.get("telegram")
+        if not isinstance(current, dict):
+            current = {}
+        data["telegram"] = deep_merge(deep_merge(DEFAULT_TELEGRAM, current), patch or {})
+        try:
+            tmp = self.cfg_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, ensure_ascii=False)
+            os.replace(tmp, self.cfg_path)
+            return True
+        except OSError:
+            return False
+
+    def patch_telegram(self, body: dict) -> dict:
+        """Guarda la config y la aplica en caliente (canal de control)."""
+        with self.lock:
+            if not self._save_telegram(body or {}):
+                return {"ok": False, "error": "no se pudo guardar config.json"}
+            self._apply_cfg(load_config(self.cfg_path))
+            tg = self.cfg.get("telegram", {}) or {}
+            current = control_io.read_control(self.control_file)
+            current["telegram"] = tg
+            current["updated"] = time.time()
+            control_io.write_control(self.control_file, current)
+            return {"ok": True, "config": tg}
+
+    def test_telegram(self, body: dict) -> dict:
+        """Envia un mensaje de prueba (usa los valores del body o de config)."""
+        from .notify import send_message
+
+        body = body or {}
+        cfg = load_config(self.cfg_path).get("telegram", {}) or {}
+        token = str(body.get("bot_token") or cfg.get("bot_token") or "")
+        chat = str(body.get("chat_id") or cfg.get("chat_id") or "")
+        parse = str(body.get("parse_mode") or cfg.get("parse_mode", "HTML") or "")
+        ok, err = send_message(
+            token, chat, "✅ Prueba de dkbot: los avisos por Telegram funcionan.", parse)
+        return {"ok": ok, "error": err}
 
     # --- proceso del bot ---
     def _pid_alive(self, pid: int) -> bool:
@@ -231,6 +358,45 @@ class Dashboard:
                 self.proc = None
             return {"ok": True, "stopped": True, "pid": pid}
 
+    # --- boton in-game (supervisor) ---
+    def _start_ui_watch(self) -> None:
+        """Hilo que vigila la peticion del boton in-game (pxg_bot_ui.txt)."""
+        if not self.status_file:
+            return
+        path = os.path.join(os.path.dirname(self.status_file), "pxg_bot_ui.txt")
+        threading.Thread(target=self._ui_watch_loop, args=(path,),
+                         daemon=True, name="ui-watch").start()
+
+    def _ui_watch_loop(self, path: str) -> None:
+        while not self._ui_stop.is_set():
+            cmd = ""
+            try:
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as handle:
+                            cmd = handle.read().strip().lower()
+                    finally:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+            except OSError:
+                cmd = ""
+            if cmd in ("start", "stop", "toggle"):
+                try:
+                    if cmd == "toggle":
+                        if self.bot_pid():
+                            self.stop_bot()
+                        else:
+                            self.start_bot()
+                    elif cmd == "start":
+                        self.start_bot()
+                    else:
+                        self.stop_bot()
+                except Exception:
+                    pass
+            self._ui_stop.wait(1.0)
+
     # --- lecturas ---
     def state(self) -> dict:
         state = _read_json(self.state_file)
@@ -243,6 +409,7 @@ class Dashboard:
         return {
             "running": pid is not None,
             "pid": pid,
+            "process_name": self.process_name,
             "connected": bool(state.get("connected", False)),
             "paused": bool(status.get("paused", False) or control.get("paused", False)),
             "behavior": playing or ("break" if status.get("chosen") == "break" else "idle"),
@@ -270,6 +437,7 @@ class Dashboard:
             "control": control,
             "llm": status.get("llm") or {},
             "telemetry": self._telemetry_status(status),
+            "telegram": status.get("telegram") or {},
             "ts": time.time(),
         }
 
@@ -698,6 +866,10 @@ class Handler(BaseHTTPRequestHandler):
             self._static("index.html")
         elif path == "/api/state":
             self._json(self.app.state())
+        elif path == "/api/process":
+            self._json(self.app.processes())
+        elif path == "/api/telegram":
+            self._json(self.app.telegram())
         elif path == "/api/config":
             self._json(self.app.config())
         elif path == "/api/log":
@@ -777,8 +949,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.app.delete_pokemon_skill(body))
         elif path == "/api/ignore":
             self._json(self.app.patch_ignore(body))
+        elif path == "/api/process":
+            self._json(self.app.set_process_name(body.get("process_name", "")))
+        elif path == "/api/telegram":
+            self._json(self.app.patch_telegram(body))
+        elif path == "/api/telegram/test":
+            self._json(self.app.test_telegram(body))
         elif path == "/api/attach":
-            self._json(self.app.attach_client())
+            self._json(self.app.attach_client(body.get("process_name")))
         elif path == "/api/bot":
             action = body.get("action")
             if action == "start":

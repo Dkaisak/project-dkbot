@@ -18,7 +18,7 @@ let worldData = {};
 
 const view = {
   cx: 0, cy: 0, z: 0, scale: 6, follow: true, mode: "color",
-  edit: false, initialized: false,
+  edit: false, initialized: false, manualZ: false,
 };
 let routeWps = [];
 let baseCanvas = null, baseKey = "";
@@ -456,6 +456,28 @@ function setFollow(on) {
   b.classList.toggle("on", on);
 }
 
+// Cambia el piso mostrado (z) sin que pollWorld lo pise con el del jugador.
+function setFloor(z) {
+  z = Math.max(0, Math.min(15, z));
+  view.z = z;
+  const pz = lastState && lastState.z;
+  view.manualZ = (pz !== undefined && pz !== null && z !== pz);
+  baseKey = "";
+  pollWorld();
+}
+
+// Centra la vista en el personaje y vuelve a seguir su piso.
+function centerOnPlayer() {
+  const s = lastState || {};
+  if (s.x === undefined || s.x === null) return;
+  view.cx = s.x;
+  view.cy = s.y;
+  if (s.z !== undefined && s.z !== null) { view.z = s.z; view.manualZ = false; }
+  view.initialized = true;
+  baseKey = "";
+  pollWorld();
+}
+
 async function loadRouteIntoEditor() {
   const r = await api("/api/route");
   routeWps = (r.waypoints || []).map((p) => [p[0], p[1], p[2] ?? view.z]);
@@ -472,6 +494,93 @@ async function loadLootConfig() {
     const el = document.getElementById(id);
     if (el && loot[key] != null) el.value = loot[key];
   }
+}
+
+async function loadProcess() {
+  const cfg = await api("/api/config");
+  const el = document.getElementById("process-name");
+  if (el && cfg.process_name) el.value = cfg.process_name;
+}
+
+async function detectProcesses() {
+  const el = document.getElementById("process-name");
+  const info = document.getElementById("process-found");
+  const r = await api("/api/process");
+  const procs = r.processes || [];
+  if (!procs.length) {
+    if (info) info.textContent = "no se encontró ningún cliente en ejecución";
+    return;
+  }
+  // si hay uno solo, rellena el campo; si hay varios, ofrece el primero
+  const names = [...new Set(procs.map((p) => p.name))];
+  if (el) el.value = names[0];
+  if (info) {
+    info.textContent = "encontrado: " + procs.map((p) => `${p.name} (pid ${p.pid})`).join(", ");
+  }
+  await api("/api/process", "POST", { process_name: names[0] });
+}
+
+/* ---------------- telegram ---------------- */
+const TG_EVENTS = [
+  ["death", "tg-ev-death"],
+  ["player", "tg-ev-player"],
+  ["shiny", "tg-ev-shiny"],
+  ["capture", "tg-ev-capture"],
+  ["revives_out", "tg-ev-revives_out"],
+  ["disconnect", "tg-ev-disconnect"],
+];
+
+function tgPayload() {
+  const val = (id) => { const e = document.getElementById(id); return e ? e.value : ""; };
+  const events = {};
+  for (const [k, id] of TG_EVENTS) {
+    const c = document.getElementById(id);
+    events[k] = c ? c.checked : true;
+  }
+  const en = document.getElementById("tg-enabled");
+  return {
+    enabled: en ? en.checked : false,
+    bot_token: (val("tg-token") || "").trim(),
+    chat_id: (val("tg-chat") || "").trim(),
+    player_range: parseInt(val("tg-range"), 10) || 7,
+    events,
+  };
+}
+
+function renderTelegramStatus(st) {
+  st = st || {};
+  const s = document.getElementById("tg-state");
+  if (s) s.textContent = st.enabled ? "ON" : (st.active ? "faltan datos" : "OFF");
+  const info = document.getElementById("tg-info");
+  if (!info) return;
+  const parts = [st.enabled ? "activo" : "inactivo"];
+  if (st.sent != null) parts.push("enviados: " + st.sent);
+  if (st.last_event) parts.push("último: " + st.last_event);
+  if (st.error) parts.push("error: " + st.error);
+  info.textContent = parts.join(" · ");
+}
+
+async function loadTelegram() {
+  const r = await api("/api/telegram");
+  const t = r.config || {};
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+  const chk = (id, v) => { const e = document.getElementById(id); if (e) e.checked = !!v; };
+  chk("tg-enabled", t.enabled);
+  set("tg-token", t.bot_token || "");
+  set("tg-chat", t.chat_id || "");
+  set("tg-range", t.player_range != null ? t.player_range : 7);
+  const ev = t.events || {};
+  for (const [k, id] of TG_EVENTS) chk(id, ev[k] !== false);
+  renderTelegramStatus(r.status || {});
+}
+
+async function saveTelegram() {
+  await api("/api/telegram", "POST", tgPayload());
+}
+
+async function pollTelegram() {
+  const r = await api("/api/telegram");
+  renderTelegramStatus(r.status || {});
 }
 
 async function refreshRoutes() {
@@ -657,6 +766,9 @@ async function refreshIgnore() {
 function wireMap() {
   const c = canvas();
   document.getElementById("m-follow").onclick = () => setFollow(!view.follow);
+  document.getElementById("m-center").onclick = centerOnPlayer;
+  document.getElementById("m-floor-up").onclick = () => setFloor(view.z - 1);
+  document.getElementById("m-floor-down").onclick = () => setFloor(view.z + 1);
   document.getElementById("m-mode").onclick = () => {
     view.mode = view.mode === "color" ? "walk" : "color";
     document.getElementById("m-mode").textContent = "Ver: " + (view.mode === "color" ? "color" : "transit.");
@@ -773,7 +885,7 @@ async function pollWorld() {
       view.cx = s.x; view.cy = s.y;
       view.initialized = true;
     }
-    if (s.z !== undefined && s.z !== null && s.z !== view.z) { view.z = s.z; baseKey = ""; }
+    if (!view.manualZ && s.z !== undefined && s.z !== null && s.z !== view.z) { view.z = s.z; baseKey = ""; }
     if (view.follow) { view.cx = s.x; view.cy = s.y; }
   }
   worldData = await api(`/api/world?z=${view.z}`);
@@ -786,12 +898,15 @@ function wire() {
   document.getElementById("btn-stop").onclick = () => api("/api/bot", "POST", { action: "stop" });
   document.getElementById("btn-attach").onclick = async () => {
     const btn = document.getElementById("btn-attach");
+    const procEl = document.getElementById("process-name");
     const old = btn.textContent;
     btn.disabled = true;
     btn.textContent = "Atachando…";
     try {
-      const r = await api("/api/attach", "POST", {});
+      const r = await api("/api/attach", "POST",
+        { process_name: procEl ? (procEl.value || "").trim() : undefined });
       if (r.ok) {
+        await loadProcess();
         alert(`Cliente atachado\npid: ${r.pid}\nmydata: ${r.mydata}\n` +
               `agente: ${r.installed ? "inyectado OK" : "NO inyectado"}` +
               (r.install_output ? `\n\n${r.install_output}` : ""));
@@ -804,6 +919,30 @@ function wire() {
       btn.disabled = false;
       btn.textContent = old;
     }
+  };
+  const procEl = document.getElementById("process-name");
+  if (procEl) procEl.onchange = (e) => {
+    const name = (e.target.value || "").trim();
+    e.target.value = name;
+    api("/api/process", "POST", { process_name: name });
+  };
+  const procDetect = document.getElementById("btn-proc-detect");
+  if (procDetect) procDetect.onclick = detectProcesses;
+  const tgIds = ["tg-enabled", "tg-token", "tg-chat", "tg-range", ...TG_EVENTS.map((e) => e[1])];
+  for (const id of tgIds) {
+    const el = document.getElementById(id);
+    if (el) el.onchange = saveTelegram;
+  }
+  const tgTest = document.getElementById("tg-test");
+  if (tgTest) tgTest.onclick = async () => {
+    const old = tgTest.textContent;
+    tgTest.disabled = true;
+    tgTest.textContent = "Enviando…";
+    const p = tgPayload();
+    const r = await api("/api/telegram/test", "POST", { bot_token: p.bot_token, chat_id: p.chat_id });
+    alert(r.ok ? "Mensaje de prueba enviado ✅" : "Error: " + (r.error || "desconocido"));
+    tgTest.disabled = false;
+    tgTest.textContent = old;
   };
   document.getElementById("btn-pause").onclick = () => api("/api/control", "POST", { paused: !(lastState.paused) });
   document.getElementById("btn-panic").onclick = async () => {
@@ -928,6 +1067,8 @@ function wire() {
 
 wire();
 loadLootConfig();
+loadProcess();
+loadTelegram();
 loadRouteIntoEditor();
 refreshRoutes();
 refreshPokemonSkills();
@@ -938,6 +1079,7 @@ setInterval(pollWorld, 1000);
 setInterval(refreshPokemonSkills, 4000);
 setInterval(refreshIgnore, 5000);
 setInterval(pollDeaths, 3000);
+setInterval(pollTelegram, 6000);
 pollState();
 pollWorld();
 pollDeaths();

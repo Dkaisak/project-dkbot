@@ -7,6 +7,7 @@ import sys
 from typing import Optional
 
 from .llm.config import DEFAULT_LLM
+from .notify import DEFAULT_TELEGRAM
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -204,6 +205,7 @@ DEFAULT_BEHAVIORS = {
         "enemy_range": 3,
         "collect_interval": 1.0,
         "collect_grace": 0.7,
+        "confirm_timeout": 1.5,
         "stuck_secs": 2.5,
         "resend_secs": 4.0,
         "phase_secs": 10.0,
@@ -289,6 +291,7 @@ def load_config(path: str) -> dict:
     raw["ui"] = deep_merge(DEFAULT_UI, raw.get("ui", {}))
     raw["telemetry"] = deep_merge(DEFAULT_TELEMETRY, raw.get("telemetry", {}))
     raw["llm"] = deep_merge(DEFAULT_LLM, raw.get("llm", {}))
+    raw["telegram"] = deep_merge(DEFAULT_TELEGRAM, raw.get("telegram", {}))
     raw.setdefault("offsets", {})
     return raw
 

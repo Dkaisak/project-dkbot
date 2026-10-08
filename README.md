@@ -184,11 +184,12 @@ salta.
   retrasaba mucho el buff si algún enemigo quedaba lejos.
 - **Summon en el lure** (`lure_summon`): en `hold` ordena el ownsummon a un tile
   con sus 8 vecinos libres (`lure_summon_radius`); el pokestop espera a que
-  llegue. Con `lure_summon_toward_enemies` (**por defecto**) el destino se sesga
-  hacia el **lado donde está la masa de enemigos** (el tile válido más cercano a
-  su centroide, dentro del radio), para que el summon quede entre el player y el
-  grupo que se lurea; si lo desactivas, cae al criterio clásico (el tile válido
-  más cercano al player). Ver §5.6.
+  llegue. Se busca **por anillos, del más cercano al personaje hacia fuera**: en
+  cuanto hay tile válido en un anillo se usa **ese** (lo más cerca posible del
+  player → los cuerpos caen cerca y el loot no tiene que ir lejos). Con
+  `lure_summon_toward_enemies` (**por defecto**) dentro de ese anillo se elige el
+  más cercano al **centroide de los enemigos**; si lo desactivas, el primero del
+  anillo. Ver §5.6.
 - **Fight-mode** (`manage_fight_mode`): fuera del burst pone **Defensivo** (3) y
   al lanzar skills **Ofensivo** (1), con un pequeño delay (`fight_mode_delay`)
   antes del primer AoE para que el servidor aplique el modo.
@@ -230,22 +231,36 @@ salta.
 
 - Los cuerpos se cosechan **siempre** (`update_corpses`), independientes de la
   prioridad: el agente reporta cada derrotado un solo tick.
-- Elige el **tile óptimo** (cubre más cuerpos con Chebyshev 1; empate → el más
-  cercano). El candidato se busca solo en los **3×3 alrededor de cada cuerpo**
-  (no en toda la caja: es barato aunque los cuerpos estén lejos) y, con otmm, se
-  **descartan los tiles no transitables** (no fija un destino en pared).
-- **Navega con el astar del bot (otmm)** al mejor tile y lo manda con `navpath`
-  (camino real); si no hay otmm, cae a `standnear`/`standnearmany` del agente.
+- **Primero pelear**: el loot **cede mientras haya enemigos atacables en
+  pantalla** (y al revive). Es la **última acción antes de seguir la ruta** —
+  antes tenía prioridad 88 (> combat 70) y looteaba a media pelea, dejando al
+  Pokémon sin terminar de lanzar skills → **muertes**.
+- **Loot greedy**: si tiene **algún cuerpo adyacente** (Chebyshev 1), lo recoge
+  ya — `g_game.collectLoot()` recoge los vecinos de una vez. Antes caminaba a la
+  casilla de "máxima cobertura" (que podía ser inalcanzable) y dejaba vecinos sin
+  recoger. Solo navega cuando no tiene nada al lado.
+- Elige el **tile de cobertura** (cubre más cuerpos con Chebyshev 1; empate → el
+  más cercano) **que además tenga camino real**: recorre los candidatos por
+  cobertura y usa el primero **alcanzable** (astar/otmm), para no fijar un destino
+  inalcanzable. Los candidatos se buscan solo en los **3×3 alrededor de cada
+  cuerpo** y se descartan los **no transitables**.
+- **Navega con el astar del bot (otmm)** a ese tile con `navpath` (camino real);
+  si no hay otmm, cae a `standnear`/`standnearmany` del agente.
+- **Confirmación por evento**: el agente publica un contador monótono `loots`
+  (detecta los mensajes `Botín de X` del servidor). El bot marca los cuerpos como
+  loteados **en cuanto el contador sube** tras recoger — sin parada ni espera
+  mecánica. `confirm_timeout` (1.5 s) es la red de seguridad si no llega
+  confirmación (cuerpo vacío o ya recogido al pasar).
 - **Camina a cuerpos lejanos siempre**, haya o no enemigos. `reach` (por defecto
   **0 = sin límite**) es un tope de distancia opcional; con 0 **no se descarta
   ningún cuerpo por lejos**.
-- Lootea con `g_game.collectLoot()` (recoge todos los cuerpos adyacentes de una
-  vez).
-- **Timer de fase por progreso** (`phase_secs`, 10 s): no cuenta el tiempo
-  total; solo abandona lo pendiente si se **estanca** ese tiempo **sin
-  progreso** (sin acercarse al cuerpo pendiente más cercano ni cambiar el
-  conjunto). Así se camina a los cuerpos lejanos sin rendirse a mitad de camino,
-  pero no se persigue un cuerpo inalcanzable para siempre.
+- **Teleport/respawn**: si el personaje salta > 12 tiles de golpe (o cambia de
+  piso), se **descartan los cuerpos pendientes** (quedaron inalcanzables) para no
+  perseguir cuerpos al otro lado del mapa.
+- **Timer de fase por progreso** (`phase_secs`, 10 s): el temporizador **no
+  avanza mientras loot cede el turno** (revive) o no se evalúa (crisis/pausa) —
+  si contara ese tiempo, tras un revive descartaría cuerpos alcanzables. Solo
+  abandona lo pendiente si se **estanca** ese tiempo **sin progreso**.
 - El **tile del pokémon propio cuenta como caminable** para el loot.
 
 ### 5.3 Revive (`ReviveBehavior`)
@@ -340,9 +355,11 @@ sin cursor) → sacar (call slot)**. El **primer** revive de la sesión espera
   y lo ordena con **`order`**. El tile está **siempre a ≥ 2 tiles del personaje**
   (nunca encima ni a 1); `summon_near_tile` arranca el radio en 2.
 - **Sesgo a enemigos** (lure, `lure_summon_toward_enemies`): al ordenar durante
-  el `hold` del lure, entre los tiles válidos se elige el **más cercano al
-  centroide de los enemigos visibles** (empate → el más cercano al player), para
-  colocar al ownsummon del lado donde hay más enemigos.
+  el `hold` del lure, se busca **por anillos, del más cercano al player hacia
+  fuera**; en el **primer anillo con tile válido**, se elige el más cercano al
+  **centroide de los enemigos visibles**. Así el ownsummon queda lo más cerca
+  posible del personaje (los cuerpos caen cerca) pero orientado al lado con más
+  enemigos. Antes podía irse a un anillo mayor por acercarse a los enemigos.
 - `evaluate` actúa si el pokémon está lejos del player (`max_dist`) o sus
   vecinos no están libres, con un `interval_secs` mínimo.
 - El **lure** también lo usa antes de pelear (`combat.lure_summon`, ver §5.1).
@@ -446,6 +463,14 @@ Así se evitan "cuerpos falsos" (criaturas que se alejan de la vista).
   tile con `getCreatureOrMapThingByMousePosition` (sin mover el cursor) y aplica
   `useInventoryItemWith(itemId, thing)`. El ítem (p. ej. **2652**) es
   `capture.ball_item`. `interval=0` → lanza cada tick.
+- **Contador de capturas**: el agente publica un contador monótono `captures`
+  (detecta el mensaje de captura `¡Has capturado…!` en la consola, en cualquier
+  pestaña, con dedupe) y el bot cuenta el **delta** en cada tick. Así cuenta
+  **toda** captura confirmada (del bot o manual), no solo las de la cola del
+  behavior (que con `shiny_only`/`names` solo incluye shinies).
+- **Primero pelear**: `capture` cede mientras haya **enemigos atacables en
+  pantalla** (igual que `loot`): lanzar balls a media pelea deja al Pokémon sin
+  terminar de lanzar skills → muertes.
 
 ---
 
@@ -468,32 +493,62 @@ bandeja del sistema); ver §18.
 Endpoints:
 - `GET /api/state`, `/api/log`, `/api/config`, `/api/world`, `/api/otmm`,
   `/api/otmm/info`, `/api/route`, `/api/routes`, `/api/pokemon_skills`,
-  `/api/ignore`, `/api/deaths`
-- `POST /api/bot` (start/stop), `/api/attach`, `/api/command`, `/api/control`,
+  `/api/ignore`, `/api/deaths`, `/api/process` (clientes detectados),
+  `/api/telegram` (config + estado de avisos)
+- `POST /api/bot` (start/stop), `/api/attach`, `/api/process` (fija el
+  `process_name`), `/api/telegram` (guarda los avisos), `/api/telegram/test`
+  (mensaje de prueba), `/api/command`, `/api/control`,
   `/api/config`, `/api/route`, `/api/routes`, `/api/routes/delete`,
   `/api/pokemon_skills/order`, `/api/pokemon_skills/lure_order`,
   `/api/pokemon_skills/delete`, `/api/ignore`
 
-Tarjetas principales: estado, control (start/stop/pausa/panic), toggles de
-behaviors (crisis/combat/loot/revive/explore; **sin curación**), ajustes de
-combate (lure min, en rango, rango ataque, rango engage, HP pánico,
-skill lista %, solo todos a rango, idle inicio), **Buff** (enemigos mínimos y
-**gate**: en pantalla / todos a rango / gate de combate), **Captura (balls)**
-(ítem, rango y filtro `names`/`exclude` por nombre), **Loot** (pestaña propia:
-alcance, enemigo cerca, cadencia de recogida, gracia, atasco, reenvío y fase),
-**Equipo** (slots con HP y activo, y selector del Pokémon de la ruta, que se saca al
-iniciarla), mapa real (base otmm, pan/zoom, transitabilidad), editor de ruta,
-**Skills / combo del lure** (orden por Pokémon + skills marcadas para cada lure,
-y **✕** para borrar del catálogo; el Pokémon activo se resalta y no se puede
-borrar) e **Ignorar criaturas** (cada jugador muestra su `[clan]` y `skull`). Pestaña **IA**: tarjetas de **decisión del LLM**
-(estado/modelo/consultas/decisión actual) y **telemetría de muertes** (contador,
-tamaño de los ficheros y últimas muertes con sus señales; ver §21/§22). El panel
-lee la `party` del estado **en tiempo real** (slots con HP y
-flag de activo) para el selector de Pokémon. El cliente no expone el nombre por
-slot: se muestra "Slot N" y el panel **aprende** el nombre cuando ese Pokémon
-está activo (se guarda en el navegador). La tarjeta *Estado* muestra además
-**contadores** de la sesión (kills, loots, looted, balls, capturas, revives,
-skills, pokestops, lures), tomados del `status_file`.
+La barra superior tiene los controles: **Atachar**, **Iniciar**, **Detener**,
+**Pausar** y **Pánico**.
+
+**Botón in-game**: el agente dibuja un botón **DKBot** en la esquina superior
+izquierda del cliente; al pulsarlo escribe `pxg_bot_ui.txt` y la GUI (que hace de
+*supervisor*) **arranca o para** el bot. Requiere la GUI en marcha (es quien
+vigila ese fichero).
+
+Pestañas y tarjetas:
+
+- **Panel**: **Conexión** (ejecutable del cliente: `pxgme.exe` / `pxgme-linux` o
+  vacío = automático según la plataforma; botón *Detectar* que rellena con el
+  cliente en ejecución; lo usa *Atachar* y se guarda en `config.json`, para
+  alternar Windows/Linux sin editar el fichero a mano), **Estado del jugador**
+  (HP/MP, posición, nivel, enemigos, `nav`/`cmd`) y **Contadores de sesión**
+  (kills, loots, looted, balls, capturas, revives, skills, pokestops, lures,
+  tomados del `status_file`).
+- **Combate**: lure/objetivo, casteo (skill lista %, intervalo, "todos a rango"),
+  **Buff** (enemigos mínimos y **gate**: en pantalla / todos a rango / gate de
+  combate) y **Pánico** (%, fuente de vida y skills).
+- **Loot**: alcance, enemigo cerca, cadencia de recogida, gracia, atasco,
+  reenvío y fase.
+- **Captura** (pestaña propia): **Captura (balls)** — ítem, rango de lanzamiento
+  y filtro `names`/`exclude` por nombre (y *catch_all*).
+- **Equipo**: slots con HP y activo, y selector del Pokémon de la ruta (se saca
+  al iniciarla); **Revive** (slot, ítem, sin-revives → logout, tecla).
+- **Ruta**: mapa real (base otmm, pan/zoom, transitabilidad y editor de ruta;
+  la paleta es la **real del cliente**, cubo 6×6×6), **Idle de inicio**,
+  **Comportamientos** (toggles crisis/combat/loot/revive/explore; **sin
+  curación**) y **Exploración** (punto de partida, radio, patrullar).
+- **Skills** (pestaña propia): **Skills rápidas** (clic = lanzar la skill) y
+  **Skills / combo del lure** (orden por Pokémon + skills marcadas para cada
+  lure, con **✕** para borrar del catálogo; el Pokémon activo se resalta y no se
+  puede borrar).
+- **Ignorar**: criaturas ignoradas (cada jugador muestra su `[clan]` y `skull`).
+- **IA**: **decisión del LLM** (estado/modelo/consultas/decisión actual) y
+  **telemetría de muertes** (contador, tamaño de los ficheros y últimas muertes
+  con sus señales; ver §21/§22).
+- **Telegram**: avisos al móvil — activar/desactivar, token y chat id, qué
+  eventos avisar (muerte, jugador, shiny, captura, sin revives, desconexión),
+  rango de jugador y botón *Enviar prueba* (ver §24).
+- **Registro**: log del bot.
+
+El panel lee la `party` del estado **en tiempo real** (slots con HP y flag de
+activo) para el selector de Pokémon. El cliente no expone el nombre por slot:
+se muestra "Slot N" y el panel **aprende** el nombre cuando ese Pokémon está
+activo (se guarda en el navegador).
 
 ---
 
@@ -501,8 +556,9 @@ skills, pokestops, lures), tomados del `status_file`.
 
 - `process_name`, `settings` (`tick_seconds`, `state_source`, humanizer…),
   `lua` (rutas de los ficheros de estado/cmd/control/world/shiny/routes/
-  pokemon_skills/ignore/clans/minimap), `llm` (capa de decisión con LLM; ver §21)
-  y `telemetry` (captura de muertes para aprender; ver §22).
+  pokemon_skills/ignore/clans/minimap), `llm` (capa de decisión con LLM; ver §21),
+  `telemetry` (captura de muertes para aprender; ver §22) y `telegram` (avisos
+  al móvil; ver §24).
 - `behaviors`: `crisis`, `healing`, `capture`, `combat`, `loot`, `revive`,
   `summon`, `route`, `explore` (ver §5 para el detalle de cada uno).
 
@@ -521,6 +577,7 @@ sobreescribe. La GUI edita `config.json` y el canal de control
 | `pxg_control.json` | Control en caliente (pausa, toggles, ruta, combate…). |
 | `pxg_bot_status.json` | Estado del bot (behavior elegido, uptime…). |
 | `pxg_bot.pid` | PID del bot. |
+| `pxg_bot_ui.txt` | Petición del botón in-game (`start`/`stop`/`toggle`); la GUI la consume. |
 | `pxg_world.json` | Mapa explorado / cobertura. |
 | `pxg_shiny.json` | Tabla nombre→outfit normal. |
 | `pxg_routes.json` | Rutas guardadas (waypoints + Pokémon de la ruta). |
@@ -639,6 +696,10 @@ Otros subcomandos: `scan`, `pointer`, `dump`, `procs`.
   ignorados + auto-aprendizaje.
 - El `minimap.otmm` puede reescribirse mientras el bot lo lee; la lectura de
   bloques tolera fallos de descompresión.
+- **Color del mapa**: el minimapa es **8 bits por tile** por diseño del cliente
+  (no hay 16/32 bits: `Tile::getMinimapColorByte()` es `uint8`). Se decodifica
+  con el **cubo 6×6×6 (216 colores)** de OTClient (`Color::from8bit`), que es la
+  paleta real del juego; `pxg_bot/otmm.py::from8bit` la replica.
 - **Curación** (`healing`) deshabilitada: sus teclas aún no están implementadas.
 - Algunos umbrales (revive, loot, combate) son heurísticos y afinables por
   config.
@@ -824,3 +885,43 @@ orebound, seavell, volcanic, ironhard.
 
 > El mapa se completa observando jugadores: cuando sepas el clan de alguien,
 > añade `"<skull>": "<clan>"` en `pxg_clans.json` (o dímelo y lo añado).
+
+---
+
+## 24. Avisos por Telegram (`pxg_bot/notify.py`)
+
+Envía avisos al móvil cuando ocurre algo relevante, mediante un **bot de
+Telegram**. Es opcional y degradable: sin `bot_token`/`chat_id` (o desactivado)
+el bot funciona igual.
+
+- **Eventos**: muerte del personaje (vida a 0 / pérdida de XP / baja de nivel),
+  **otro jugador cerca** (a `player_range` tiles), **shiny** encontrado,
+  **captura** confirmada (con la especie), **sin revives** (logout) y
+  **desconexión**.
+- **Hilo con cola**: los envíos van a un hilo aparte, así el bucle del bot
+  (0.05 s) nunca se bloquea por la red. Al cerrar el bot se **drena** la cola,
+  para no perder avisos como el de "sin revives".
+- **Anti-spam**: cada evento tiene *cooldown* y dedupe por clave (el mismo
+  jugador/shiny no repite dentro del intervalo).
+- **Sin dependencias**: usa `urllib.request` de la stdlib contra la Bot API
+  (`https://api.telegram.org/bot<token>/sendMessage`).
+
+### Configuración (`config.json` → `telegram`)
+
+| Clave | Def. | Qué hace |
+|---|---|---|
+| `enabled` | `false` | Activa los avisos. |
+| `bot_token` | `""` | Token del bot (de **@BotFather**). |
+| `chat_id` | `""` | Destino (tu chat o grupo). |
+| `parse_mode` | `HTML` | Formato del mensaje. |
+| `player_range` | `7` | Tiles a los que avisa de otro jugador. |
+| `events` | todos `true` | `death`, `player`, `shiny`, `capture`, `revives_out`, `disconnect`. |
+| `cooldowns` | — | Segundos mínimos entre avisos de cada evento. |
+
+Todo se edita desde la pestaña **Telegram** de la GUI: se guarda en `config.json`
+y se aplica **en caliente** por el canal de control. El botón **Enviar prueba**
+manda un mensaje de verificación.
+
+> Crea el bot con **@BotFather** (`/newbot`), copia el token y escríbele algo al
+> bot; tu `chat_id` lo obtienes en
+> `https://api.telegram.org/bot<token>/getUpdates`.

@@ -36,6 +36,15 @@ class Blackboard:
         # deteccion de cuerpos desacoplada de la prioridad de los behaviors: el
         # agente reporta cada cuerpo derrotado durante un solo tick, asi que hay
         # que cosecharlo siempre, aunque en ese tick actue revive/loot/etc.
+        # teleport/respawn: si el player salta muchos tiles de golpe (o cambia de
+        # piso), los cuerpos pendientes quedan inalcanzables -> se descartan para
+        # no perseguir cuerpos al otro lado del mapa.
+        p = state.player.pos
+        prev = self.notes.get("player_last_pos")
+        if prev is not None and p.distance(Vec3(prev[0], prev[1], prev[2])) > 12:
+            self.notes["corpses_pending"] = []
+            self.notes.pop("collect_rec", None)
+        self.notes["player_last_pos"] = (p.x, p.y, p.z)
         seen = self.notes.setdefault("defeated_seen", set())
         looted = self.notes.setdefault("looted_ids", set())
         pending = self.notes.setdefault("corpses_pending", [])
@@ -86,6 +95,18 @@ def is_enemy(c: Creature) -> bool:
     return c.attackable and not c.is_player
 
 
+def enemies_on_screen(state: GameState) -> bool:
+    """True si hay algun enemigo atacable dentro de la camara (pantalla)."""
+    vis = state.visible or {}
+    hw = int(vis.get("w", 21)) // 2
+    hh = int(vis.get("h", 11)) // 2
+    px, py = state.player.pos.x, state.player.pos.y
+    for c in state.creatures:
+        if is_enemy(c) and abs(c.pos.x - px) <= hw and abs(c.pos.y - py) <= hh:
+            return True
+    return False
+
+
 def summon_near_tile(state: GameState, otmm, radius: int = 4, enemies=None):
     """Devuelve el tile valido para ordenar el ownsummon: 8 vecinos libres
     (caminables en el otmm), no ocupado por criaturas y a >= 2 tiles del player
@@ -118,9 +139,14 @@ def summon_near_tile(state: GameState, otmm, radius: int = 4, enemies=None):
 
     # nunca a 1 tile del personaje (ni encima): minimo Chebyshev 2
     r_min = 2
-    best = None
-    best_key = None
+    # Se busca por ANILLOS, del mas cercano al personaje hacia fuera: en cuanto
+    # hay casilla valida en un anillo, se usa ESA (lo mas cerca posible del
+    # player). Antes se cogia la casilla mas cercana al centroide enemigo aunque
+    # estuviera en un anillo mayor -> el summon quedaba lejos y los cuerpos
+    # caian lejos (dificiles de lootear). Dentro del anillo elegido, el sesgo a
+    # enemigos solo desempata hacia el lado con mas enemigos.
     for r in range(r_min, max(r_min, radius) + 1):
+        ring = []
         for dx in range(-r, r + 1):
             for dy in range(-r, r + 1):
                 if max(abs(dx), abs(dy)) != r:
@@ -136,16 +162,15 @@ def summon_near_tile(state: GameState, otmm, radius: int = 4, enemies=None):
                     continue
                 if not free(x, y):
                     continue
-                if cen is None:
-                    # clasico: el primero valido = el mas cercano al player
-                    return Vec3(x, y, p.z)
-                cdx, cdy = x - cen[0], y - cen[1]
-                # mas cerca del centroide enemigo; empate -> mas cerca del player
-                key = (-(cdx * cdx + cdy * cdy), -r)
-                if best_key is None or key > best_key:
-                    best_key = key
-                    best = Vec3(x, y, p.z)
-    return best
+                ring.append((x, y))
+        if not ring:
+            continue
+        if cen is None:
+            x, y = ring[0]
+            return Vec3(x, y, p.z)
+        x, y = min(ring, key=lambda t: (t[0] - cen[0]) ** 2 + (t[1] - cen[1]) ** 2)
+        return Vec3(x, y, p.z)
+    return None
 
 
 class Behavior:
@@ -296,20 +321,21 @@ class CaptureBehavior(Behavior):
         pending[:] = [t for t in pending if self._valid(t)]
         if not pending:
             return False
-        # no capturar si hay un enemigo vivo pegado (pelear primero)
-        for c in state.creatures:
-            if is_enemy(c) and state.player.pos.distance(c.pos) <= 3:
-                return False
+        # primero pelear: no capturar mientras queden enemigos en pantalla
+        # (lanzar balls a media pelea deja al Pokemon sin skills -> muertes)
+        if enemies_on_screen(state):
+            return False
         return True
 
     def act(self, state: GameState, bb: Blackboard, inp) -> None:
         pending = self._pending(bb)
         if not pending:
             return
-        # capturado (mensaje del servidor): el cuerpo se va
+        # capturado (mensaje del servidor): el cuerpo se va. El recuento lo hace
+        # el bot con el contador del agente (`Bot._count_captures`), para contar
+        # tambien capturas que no vengan de la cola (p. ej. manuales o no-shiny).
         if getattr(state, "captured", False):
             pending.pop(0)
-            bb.count("captured")
             return
         t = pending[0]
         pos = Vec3(int(t["x"]), int(t["y"]), int(t["z"]))
@@ -1081,13 +1107,47 @@ class LootBehavior(Behavior):
                 best = (x, y)
         return best
 
-    def _finalize(self, bb: Blackboard) -> None:
-        # un unico collectLoot recoge TODOS los cuerpos adyacentes; tras el
-        # tiempo de gracia marcamos como loteados los que estaban adyacentes.
+    def _reachable_target(self, state, pending, wm, otmm):
+        """Tile de cobertura CON camino real (astar del bot).
+
+        Recorre los candidatos por cobertura (y cercania) y devuelve el primero
+        al que el astar llega, para no fijar un destino inalcanzable (que dejaba
+        cuerpos vecinos sin recoger). Devuelve (target, path)."""
+        pos = state.player.pos
+        cands = []
+        for (x, y) in self._candidate_tiles(pending):
+            if not otmm.pathable(x, y, pos.z):
+                continue
+            cov = self._coverage(x, y, pending)
+            if cov <= 0:
+                continue
+            cands.append((cov, max(abs(pos.x - x), abs(pos.y - y)), x, y))
+        cands.sort(key=lambda c: (-c[0], c[1]))
+        for _cov, _d, x, y in cands[:12]:
+            path = wm.plan_to(pos, x, y)
+            if path:
+                return (x, y), path
+        return None, None
+
+    def _finalize(self, state, bb: Blackboard) -> None:
+        """Marca como looteados los cuerpos de la ultima recogida.
+
+        Confirmacion por evento: en cuanto el servidor manda un mensaje de botin
+        (`state.loots` sube) se da por recogido — rapido, sin esperas mecanicas.
+        Fallback: si no llega confirmacion en `confirm_timeout`, se marca igual
+        (cuerpo vacio o ya recogido al pasar) para no quedarse colgado."""
         rec = bb.notes.get("collect_rec")
         if not rec:
             return
-        if time.time() - rec["t"] < float(self.cfg.get("collect_grace", 0.8)):
+        now = time.time()
+        elapsed = now - rec["t"]
+        loots = int(getattr(state, "loots", -1)) if state is not None else -1
+        loot0 = rec.get("loot0")
+        confirmed = (loots >= 0 and loot0 is not None and loots > int(loot0))
+        if confirmed:
+            if elapsed < 0.12:
+                return
+        elif elapsed < float(self.cfg.get("confirm_timeout", 1.5)):
             return
         looted = bb.notes.setdefault("looted_ids", set())
         looted.update(rec["ids"])
@@ -1108,10 +1168,25 @@ class LootBehavior(Behavior):
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
         if bb.paused or not self.cfg.get("enabled", True):
             return False
-        # una secuencia de revive en curso es atomica: loot cede para no estirarla
-        if bb.notes.get("revive_rec") or bb.notes.get("revive_urgent") or bb.notes.get("revive_fast"):
+        now = time.time()
+        last_eval = bb.notes.get("loot_eval_at", 0.0)
+        bb.notes["loot_eval_at"] = now
+        ceded = bool(bb.notes.get("revive_rec") or bb.notes.get("revive_urgent")
+                     or bb.notes.get("revive_fast"))
+        fighting = enemies_on_screen(state)
+        # El temporizador de fase NO debe avanzar mientras loot cede el turno
+        # (revive), NO se evalua (crisis/pausa) o hay enemigos en pantalla (se esta
+        # peleando). Si contara ese tiempo, al volver descartaria cuerpos
+        # ALCANZABLES.
+        if ceded or fighting or (last_eval and now - last_eval > 1.5):
+            if bb.notes.get("loot_phase_start", 0.0):
+                bb.notes["loot_progress_at"] = now
+        # Loot es la ULTIMA accion antes de seguir la ruta: primero terminar de
+        # matar a TODOS los enemigos en pantalla (si no, lotear a media pelea deja
+        # al pokemon sin lanzar skills -> muertes) y ceder al revive.
+        if ceded or fighting:
             return False
-        self._finalize(bb)
+        self._finalize(state, bb)
         pending = self._pending(bb)
         if not pending:
             self._reset_phase(bb)
@@ -1167,28 +1242,28 @@ class LootBehavior(Behavior):
             walkable = lambda x, y: otmm.pathable(x, y, z0)
         cur = self._coverage(px, py, pending)
         best = self._best_coverage(pending, walkable)
-        enemy_near = self._enemy_near(state)
         bb.notes["loot_cur"] = cur
         bb.notes["loot_best"] = best
         bb.notes["loot_bopt"] = self._best_tile(pending, state.player.pos, walkable)
 
-        # temporizador de atasco: se reinicia al movernos o cambiar el grupo
-        sig = (best, tuple(sorted(c["id"] for c in pending)))
-        if bb.notes.get("loot_sig") != sig or bb.notes.get("loot_pos") != (px, py):
-            bb.notes["loot_sig"] = sig
-            bb.notes["loot_pos"] = (px, py)
-            bb.notes["loot_since"] = time.time()
-        stuck = time.time() - bb.notes.get("loot_since", time.time())
-
-        # lootear si hay algo adyacente (aunque haya enemigos) o en cobertura maxima
-        if cur >= 1 and (enemy_near or cur >= best or stuck > float(self.cfg.get("stuck_secs", 2.5))):
-            if bb.ready("collect", float(self.cfg.get("collect_interval", 0.8))):
+        # lootear SIEMPRE que haya algo adyacente: collectLoot recoge TODOS los
+        # cuerpos vecinos de una vez. Antes se caminaba a la casilla de "maxima
+        # cobertura" (que podia ser inalcanzable) y se dejaban cuerpos vecinos sin
+        # recoger. Ahora es greedy; si no hay nada adyacente, se navega.
+        if cur >= 1:
+            # recoger sin parar (el auto-loot recoge por cercania); la
+            # confirmacion llega con el mensaje de botin del servidor
+            # (`state.loots`), asi no hace falta la parada + espera mecanica.
+            if not bb.notes.get("collect_rec") and bb.ready("collect", float(self.cfg.get("collect_interval", 0.8))):
                 inp.loot()
                 bb.count("loot")
                 bb.mark("collect")
                 ids = [c["id"] for c in pending
                        if max(abs(px - c["x"]), abs(py - c["y"])) <= 1]
-                bb.notes["collect_rec"] = {"t": time.time(), "ids": ids}
+                bb.notes["collect_rec"] = {
+                    "t": time.time(), "ids": ids,
+                    "loot0": int(getattr(state, "loots", -1)),
+                }
             return
 
         bodies = [[c["x"], c["y"]] for c in pending]
@@ -1197,11 +1272,11 @@ class LootBehavior(Behavior):
         fp = tuple(sorted((c["x"], c["y"]) for c in pending))
         since = time.time() - bb.notes.get("loot_nav_t", 0.0)
         if fp != bb.notes.get("loot_nav_fp") or since > float(self.cfg.get("resend_secs", 4.0)):
-            # navegar con el astar del bot (otmm) al mejor tile de cobertura
-            target = self._best_tile(pending, state.player.pos, walkable)
+            # navegar al mejor tile de cobertura QUE TENGA CAMINO real (no fijar
+            # un destino inalcanzable)
             path = None
-            if wm is not None and otmm is not None and getattr(otmm, "ready", False) and target:
-                path = wm.plan_to(state.player.pos, target[0], target[1])
+            if wm is not None and otmm is not None and getattr(otmm, "ready", False):
+                _tgt, path = self._reachable_target(state, pending, wm, otmm)
             if path and len(path) > 1:
                 # camino real (otmm) -> navpath; el agente lo sigue con autoWalk.
                 # Se manda un tramo largo para no parar a mitad en cuerpos lejanos.

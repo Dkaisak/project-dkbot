@@ -151,6 +151,10 @@ class GameState:
     is_walking: bool = False
     spawn_blocked: bool = False
     captured: bool = False
+    captures: int = 0
+    capture_name: str = ""
+    loots: int = 0
+    loot_msg: str = ""
     active_pokemon_name: str = ""
     skill_order: list = field(default_factory=list)
     lure_order: list = field(default_factory=list)

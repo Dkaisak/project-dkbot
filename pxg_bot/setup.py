@@ -148,6 +148,22 @@ def update_agent_dir(agent_path: str, new_base: str) -> str:
     return _AGENT_DIR_RE.sub(f'local DIR = _G.PXG_DIR or "{forward}"', text, count=1)
 
 
+def _python_interpreter() -> str:
+    """Interprete Python real para lanzar scripts auxiliares (Linux).
+
+    Congelado con PyInstaller, `sys.executable` es el propio binario `dkbot`,
+    que no puede ejecutar `tools/install_agent.py`; se usa el `python3` del
+    sistema (con `python` como alternativa).
+    """
+    if not paths.IS_FROZEN:
+        return sys.executable
+    for name in ("python3", "python"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return sys.executable
+
+
 def install_agent(pid: int, agent_path: str = AGENT, mydata: str = None):
     """Inyecta el agente. Devuelve (ok, salida).
 
@@ -168,7 +184,7 @@ def install_agent(pid: int, agent_path: str = AGENT, mydata: str = None):
         return ok, json.dumps(res, ensure_ascii=False)
     try:
         res = subprocess.run(
-            [sys.executable, INSTALL, "--pid", str(pid), "--agent", agent_path],
+            [_python_interpreter(), INSTALL, "--pid", str(pid), "--agent", agent_path],
             capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)

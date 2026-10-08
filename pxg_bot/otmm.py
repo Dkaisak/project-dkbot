@@ -32,10 +32,21 @@ FLAG_NOTWALK = 4
 
 
 def from8bit(color: int) -> tuple[int, int, int]:
-    """Color 8-bit de OTClient a RGB 24-bit (esquema 3-3-2)."""
-    r = ((color >> 5) & 0x07) * 255 // 7
-    g = ((color >> 2) & 0x07) * 255 // 7
-    b = (color & 0x03) * 255 // 3
+    """Color 8-bit de OTClient a RGB 24-bit.
+
+    OTClient NO usa 3-3-2: usa un cubo 6x6x6 (216 colores), donde cada canal
+    vale 0,51,102,153,204,255 (ver `Color::from8bit` en color.h):
+        r = (color // 36) % 6 * 51
+        g = (color // 6)  % 6 * 51
+        b = (color % 6) * 51
+    Los valores >= 216 (incl. 255 = "sin tile") se resuelven a negro, igual que
+    el cliente.
+    """
+    if color <= 0 or color >= 216:
+        return 0, 0, 0
+    r = (color // 36) % 6 * 51
+    g = (color // 6) % 6 * 51
+    b = (color % 6) * 51
     return r, g, b
 
 

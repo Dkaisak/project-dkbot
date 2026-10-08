@@ -477,12 +477,24 @@ local function snapCreature(c)
   end
   local ownsummon = false
   pcall(function() ownsummon = (c.isOwnSummon == true) end)
+  -- skull: en PXG la insignia de clan se dibuja en el nameplate como el skull
+  -- (ids custom 50-88). El cliente no lo traduce a nombre; lo mapea el bot.
+  local skull = nil
+  if c.getSkull then
+    local okS, s = pcall(function() return c:getSkull() end)
+    if okS then skull = tonumber(s) end
+  end
+  local emblem = nil
+  if c.getEmblem then
+    local okE, e = pcall(function() return c:getEmblem() end)
+    if okE then emblem = tonumber(e) end
+  end
   return {
     id = tostring(oid and id or 0),
     name = tostring(c:getName()), x = cp.x, y = cp.y, z = cp.z,
     hp = c:getHealthPercent(),
     player = isKind(c, "isPlayer"), monster = isKind(c, "isMonster"), npc = isKind(c, "isNpc"),
-    outfit = outfit_type, ownsummon = ownsummon,
+    outfit = outfit_type, ownsummon = ownsummon, skull = skull, emblem = emblem,
   }
 end
 
@@ -1129,6 +1141,10 @@ local function snapshot()
     connected = true, name = lp:getName(),
     hp = lp:getHealth(), maxhp = lp:getMaxHealth(), hppct = lp:getHealthPercent(),
     level = lp:getLevel(), x = p.x, y = p.y, z = p.z, dir = lp:getDirection(),
+    exp = (function()
+      local ok, e = pcall(function() return lp:getExperience() end)
+      return ok and tonumber(e) or nil
+    end)(),
     attacking = (g_game.getAttackingCreature and g_game.getAttackingCreature() ~= nil) or false,
     attacking_name = (function()
       local ok, ac = pcall(function() return g_game.getAttackingCreature() end)

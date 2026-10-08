@@ -1437,6 +1437,10 @@ local function snapshot()
     end
   end
   st.server_msgs = {}
+  PXG_CAP_SEEN = PXG_CAP_SEEN or {}
+  PXG_CAP_ORDER = PXG_CAP_ORDER or {}
+  PXG_LOOT_SEEN = PXG_LOOT_SEEN or {}
+  PXG_LOOT_ORDER = PXG_LOOT_ORDER or {}
   local spawn_blocked = false
   local captured = false
   local seen_block = PXG_MSG_BLOCK or ""
@@ -1464,9 +1468,30 @@ local function snapshot()
                     spawn_blocked = true
                     seen_block = txt
                   end
-                  if low:find("has capturado", 1, true) and txt ~= seen_capture then
+                  if low:find("has capturado", 1, true) and not PXG_CAP_SEEN[txt] then
+                    PXG_CAP_SEEN[txt] = true
+                    PXG_CAP_ORDER[#PXG_CAP_ORDER + 1] = txt
+                    PXG_CAPTURES = (PXG_CAPTURES or 0) + 1
+                    if #PXG_CAP_ORDER > 30 then
+                      local old = table.remove(PXG_CAP_ORDER, 1)
+                      PXG_CAP_SEEN[old] = nil
+                    end
+                    local cname = txt:match("%((.-)%)")
+                    if cname and cname ~= "" then PXG_CAP_NAME = cname end
                     captured = true
                     seen_capture = txt
+                  end
+                  -- loot confirmado por el servidor ("Botín de X: ...")
+                  if (low:find("bot\xc3\xadn", 1, true) or low:find("botin", 1, true))
+                     and not PXG_LOOT_SEEN[txt] then
+                    PXG_LOOT_SEEN[txt] = true
+                    PXG_LOOT_ORDER[#PXG_LOOT_ORDER + 1] = txt
+                    PXG_LOOTS = (PXG_LOOTS or 0) + 1
+                    if #PXG_LOOT_ORDER > 40 then
+                      local oldl = table.remove(PXG_LOOT_ORDER, 1)
+                      PXG_LOOT_SEEN[oldl] = nil
+                    end
+                    PXG_LOOT_MSG = txt
                   end
                 end
               end
@@ -1483,6 +1508,10 @@ local function snapshot()
   PXG_MSG_SEEN = latest
   st.spawn_blocked = spawn_blocked
   st.captured = captured
+  st.captures = PXG_CAPTURES or 0
+  st.capture_name = PXG_CAP_NAME or ""
+  st.loots = PXG_LOOTS or 0
+  st.loot_msg = PXG_LOOT_MSG or ""
   -- posicion y hp del pokemon propio (summon del jugador)
   st.pokemon_pos = nil
   st.pokemon_hp = nil
@@ -1522,9 +1551,42 @@ local function execTick()
   pcall(function() PXG_EVENT_EXEC = g_eventDispatcher.schedule(execTick, 60) end)
 end
 
+-- Boton in-game de DKBot: al pulsarlo escribe una peticion que el supervisor
+-- (la GUI) lee para iniciar/parar el bot. Se recrea si desaparece.
+local UIREQ = DIR .. "/pxg_bot_ui.txt"
+local function uiRequest(cmd)
+  local f = io.open(UIREQ, "w")
+  if f then f:write(cmd .. "\n"); f:close() end
+end
+
+local function ensureBotButton()
+  local root = g_ui.getRootWidget()
+  if not root then return end
+  local b = root:recursiveGetChildById("dkbotButton")
+  if not b then
+    local okc, nb = pcall(function() return UIButton.create() end)
+    if not okc or not nb then return end
+    b = nb
+    pcall(function() root:addChild(b) end)
+  end
+  pcall(function()
+    local style = g_ui.getRootStyler():getStyle("GreenSmallButton")
+    if style then b:applyStyle(style) end
+    b:setId("dkbotButton")
+    b:setText("DKBot")
+    b:setTooltip("Iniciar / parar DKBot")
+    b:setWidth(72)
+    b:setHeight(20)
+    b:setPosition({ x = 8, y = 8 })
+    b:setVisible(true)
+    b.onClick = function() uiRequest("toggle") end
+  end)
+end
+
 -- Tick lento: snapshot pesado + guardar estado
 local function snapTick()
   if PXG_GEN ~= mygen then return end
+  pcall(ensureBotButton)
   local ok, st = pcall(snapshot)
   if not ok then st = { error = tostring(st) } end
   local oke, json = pcall(cjson.encode, st)

@@ -1,6 +1,6 @@
 {
-  "process_name": "pxgme.exe",
-  "module_name": "pxgme.exe",
+  "process_name": "pxgme-linux",
+  "module_name": "pxgme-linux",
   "_doc": {
     "offsets.player_base": "Punto de entrada al struct del jugador. mode=static usa 'address' (direccion absoluta donde vive el puntero); mode=signature escanea 'signature' en 'module'. 'rip_relative' usa operand_offset como rel32. 'chain' es una lista de offsets puntero-a-puntero; 'deref' son desreferencias extra al final.",
     "offsets.player.fields": "Offsets de cada campo respecto al struct del jugador. type: i32/u32/u16/u8/f32/f64/bool/str/str_utf16.",
@@ -296,14 +296,37 @@
     "max_enemies": 12,
     "log_rationale": true
   },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "8506283643:AAH45FhCMsFVXhpzUfClcrzSYi4qn0U0LI8",
+    "chat_id": "-5027724188",
+    "parse_mode": "HTML",
+    "player_range": 7,
+    "events": {
+      "death": true,
+      "player": true,
+      "shiny": true,
+      "capture": true,
+      "revives_out": true,
+      "disconnect": true
+    },
+    "cooldowns": {
+      "death": 15.0,
+      "player": 30.0,
+      "shiny": 10.0,
+      "capture": 0.0,
+      "revives_out": 60.0,
+      "disconnect": 30.0
+    }
+  },
   "lua": {
-    "state_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_state.json",
-    "cmd_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_cmd.txt",
-    "control_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_control.json",
-    "status_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_status.json",
-    "minimap_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/minimap.otmm",
-    "shiny_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_shiny.json",
-    "routes_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_routes.json",
+    "state_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_state.json",
+    "cmd_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_cmd.txt",
+    "control_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_control.json",
+    "status_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_status.json",
+    "minimap_file": "/home/dkaisak/Descargas/pxg-linux/mydata/minimap.otmm",
+    "shiny_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_shiny.json",
+    "routes_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_routes.json",
     "direction_map": {
       "0": 0,
       "1": 4,
@@ -314,15 +337,15 @@
       "6": 3,
       "7": 7
     },
-    "pokemon_skills_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_pokemon_skills.json",
-    "ignore_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_ignore.json",
+    "pokemon_skills_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_pokemon_skills.json",
+    "ignore_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_ignore.json",
     "clans_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_clans.json"
   },
   "ui": {
     "port": 8765,
     "host": "127.0.0.1",
     "auto_open": true,
-    "log_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot.log",
+    "log_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot.log",
     "mode": "app",
     "debug": false,
     "icon": "tools/icon.ico",
@@ -445,6 +468,7 @@
       "enemy_range": 3,
       "collect_interval": 1.0,
       "collect_grace": 0.7,
+      "confirm_timeout": 1.5,
       "stuck_secs": 2.5,
       "resend_secs": 4,
       "phase_secs": 10.0

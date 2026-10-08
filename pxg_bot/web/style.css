@@ -125,6 +125,8 @@ input[type="number"], input[type="text"], select, input.mini {
   border-radius: 8px; padding: 6px 8px; font-size: 13px; width: 74px;
 }
 input[type="text"], input#m-route-name { width: auto; }
+input#process-name { width: 180px; }
+input#tg-token, input#tg-chat { width: 240px; }
 select { width: auto; min-width: 90px; }
 input:focus, select:focus { outline: none; border-color: var(--accent2); }
 input[type="range"] { flex: 1; accent-color: var(--accent); }

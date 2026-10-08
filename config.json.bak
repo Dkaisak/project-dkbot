@@ -1,6 +1,6 @@
 {
   "process_name": "pxgme-linux",
-  "module_name": "pxgme.exe",
+  "module_name": "pxgme-linux",
   "_doc": {
     "offsets.player_base": "Punto de entrada al struct del jugador. mode=static usa 'address' (direccion absoluta donde vive el puntero); mode=signature escanea 'signature' en 'module'. 'rip_relative' usa operand_offset como rel32. 'chain' es una lista de offsets puntero-a-puntero; 'deref' son desreferencias extra al final.",
     "offsets.player.fields": "Offsets de cada campo respecto al struct del jugador. type: i32/u32/u16/u8/f32/f64/bool/str/str_utf16.",
@@ -250,11 +250,30 @@
       "enabled": true,
       "profile": "normal",
       "overrides": {
-        "cooldown_jitter_pct": 0
+        "cooldown_jitter_pct": 0,
+        "session_enabled": false,
+        "pause_chance": 0
       },
       "idle_only_pause": true,
       "random_seed": null
     }
+  },
+  "telemetry": {
+    "enabled": true,
+    "dir": "",
+    "sample_secs": 0.25,
+    "window_secs": 30.0,
+    "trace": true,
+    "trace_max_mb": 50,
+    "death_cooldown_secs": 10.0,
+    "settle_secs": 1.0,
+    "exp_drop": true,
+    "level_drop": true,
+    "player_death": true,
+    "alert_msg": true,
+    "pokemon_faint": true,
+    "disconnect": true,
+    "alert_keywords": null
   },
   "llm": {
     "enabled": false,
@@ -277,6 +296,27 @@
     "max_enemies": 12,
     "log_rationale": true
   },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "8506283643:AAH45FhCMsFVXhpzUfClcrzSYi4qn0U0LI8",
+    "chat_id": "-5027724188",
+    "parse_mode": "HTML",
+    "player_range": 7,
+    "events": {
+      "death": true,
+      "player": true,
+      "shiny": true,
+      "revives_out": true,
+      "disconnect": true
+    },
+    "cooldowns": {
+      "death": 15.0,
+      "player": 30.0,
+      "shiny": 10.0,
+      "revives_out": 60.0,
+      "disconnect": 30.0
+    }
+  },
   "lua": {
     "state_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_state.json",
     "cmd_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_cmd.txt",
@@ -296,7 +336,8 @@
       "7": 7
     },
     "pokemon_skills_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_pokemon_skills.json",
-    "ignore_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_ignore.json"
+    "ignore_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_ignore.json",
+    "clans_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_clans.json"
   },
   "ui": {
     "port": 8765,
@@ -340,6 +381,8 @@
     "capture": {
       "enabled": true,
       "targets": [],
+      "names": [],
+      "exclude": [],
       "catch_all": false,
       "shiny_only": true,
       "hp_threshold": 30,
@@ -394,16 +437,19 @@
       "lure_aoe": true,
       "lure_visible_min": 5,
       "lure_gather_timeout": 10.0,
+      "lure_tope_wait": true,
       "lure_use_single": false,
       "hold_timeout": 15.0,
       "fight_recover_secs": 1.5,
       "resume_pause_secs": 1.0,
       "lure_summon": true,
       "lure_summon_radius": 3,
+      "lure_summon_toward_enemies": true,
       "summon_arrive_tolerance": 1,
       "summon_grace_secs": 3.0,
       "buff_on_screen": true,
       "buff_visible_min": 3,
+      "buff_gate": "screen",
       "aoe_priority": [
         "Air Vortex"
       ],
@@ -416,14 +462,12 @@
     },
     "loot": {
       "enabled": true,
-      "interval": 0.5,
+      "reach": 0,
+      "enemy_range": 3,
       "collect_interval": 1.0,
       "collect_grace": 0.7,
       "stuck_secs": 2.5,
       "resend_secs": 4,
-      "reach": 20,
-      "timeout": 20.0,
-      "enemy_range": 3,
       "phase_secs": 10.0
     },
     "route": {

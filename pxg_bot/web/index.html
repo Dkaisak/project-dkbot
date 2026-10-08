@@ -44,11 +44,13 @@
     <button class="tab active" data-tab="panel">Panel</button>
     <button class="tab" data-tab="combate">Combate</button>
     <button class="tab" data-tab="loot">Loot</button>
+    <button class="tab" data-tab="captura">Captura</button>
     <button class="tab" data-tab="equipo">Equipo</button>
     <button class="tab" data-tab="ruta">Ruta</button>
     <button class="tab" data-tab="skills">Skills</button>
     <button class="tab" data-tab="ignorar">Ignorar</button>
     <button class="tab" data-tab="ia">IA</button>
+    <button class="tab" data-tab="telegram">Telegram</button>
     <button class="tab" data-tab="log">Registro</button>
   </nav>
   </div>
@@ -58,6 +60,24 @@
     <!-- ============ PANEL ============ -->
     <section class="pane active" data-pane="panel">
       <div class="grid">
+        <section class="card">
+          <h3>Conexión <span class="muted small">(cliente)</span></h3>
+          <div class="muted small">Ejecutable del cliente que detecta, ajusta las rutas e inyecta el botón <b>Atachar</b>.</div>
+          <div class="field"><label>Proceso</label>
+            <input type="text" id="process-name" class="mini" list="process-presets"
+                   placeholder="automático (según plataforma)" />
+            <datalist id="process-presets">
+              <option value="pxgme.exe"></option>
+              <option value="pxgme-linux"></option>
+            </datalist>
+            <span class="muted small" id="process-info">Vacío = automático: <code>pxgme.exe</code> en Windows, <code>pxgme-linux</code> en Linux.</span>
+          </div>
+          <div class="inline">
+            <button id="btn-proc-detect" class="mini" title="Busca clientes de PokeXGames en ejecución y rellena el campo">Detectar</button>
+            <span class="muted small" id="process-found"></span>
+          </div>
+        </section>
+
         <section class="card span2">
           <h3>Estado del jugador</h3>
           <div class="row"><label>HP</label><div class="bar"><i id="hp-bar"></i><span id="hp-txt">0%</span></div></div>
@@ -77,60 +97,6 @@
         <section class="card span2">
           <h3>Contadores de sesión</h3>
           <div class="muted small" id="counters">—</div>
-        </section>
-
-        <section class="card">
-          <h3>Captura (balls)</h3>
-          <div class="muted small">Lanza una ball a los cuerpos derrotados (por Lua, sin mover el cursor).</div>
-          <div class="field"><label>Ítem de la ball</label>
-            <input type="number" id="cap-item" class="mini" min="1" max="999999" value="2652" />
-            <span class="muted small">id del objeto que se lanza (2652 = ball normal)</span></div>
-          <div class="field"><label>Distancia de lanzamiento</label>
-            <input type="number" id="cap-range" class="mini" min="1" max="8" value="4" />
-            <span class="muted small">a cuántos tiles como máximo se lanza; si el cuerpo está más lejos, se acerca antes</span></div>
-          <div class="field"><label>Solo a estos Pokémon</label>
-            <input type="text" id="cap-names" placeholder="Charmander, Dratini" />
-            <span class="muted small">nombres separados por comas. Si pones alguno, se lanza SOLO a esos (aunque no sean shiny). Vacío = solo shinies</span></div>
-          <div class="field"><label>Nunca lanzar a</label>
-            <input type="text" id="cap-exclude" placeholder="Rattata" />
-            <span class="muted small">nombres separados por comas que se ignoran siempre (tiene prioridad sobre la lista anterior)</span></div>
-          <label class="switch"><input type="checkbox" id="catchall" /><span>Lanzar a TODOS los derrotados (no solo shinies)</span></label>
-        </section>
-
-        <section class="card">
-          <h3>Comportamientos</h3>
-          <div id="behaviors" class="toggles"></div>
-          <div class="muted small" style="margin-top:10px; line-height:1.6">
-            <b>crisis</b>: pausa si te ve un jugador/GM o si la vida es crítica ·
-            <b>combat</b>: junta enemigos (lure) y pelea ·
-            <b>loot</b>: recoge los cuerpos ·
-            <b>revive</b>: revive/resetea el Pokémon ·
-            <b>explore</b>: explora y patrulla la zona
-          </div>
-        </section>
-
-        <section class="card">
-          <h3>Exploración</h3>
-          <div class="muted small">Cubre una zona cuando no hay una ruta dibujada.</div>
-          <div class="field"><label>Punto de partida</label>
-            <div class="inline">
-              <code id="home">—</code>
-              <button id="btn-home" class="mini" title="Usa tu posición actual como inicio de la exploración">Fijar aquí</button>
-              <button id="btn-home-clear" class="mini ghost" title="Borra el punto de partida">Limpiar</button>
-            </div>
-            <span class="muted small">centro de la zona a explorar</span>
-          </div>
-          <div class="field"><label>Radio de exploración</label>
-            <input type="range" id="radius" min="10" max="200" step="5" value="60" />
-            <span id="radius-txt" class="muted">60</span>
-            <span class="muted small">cuántos tiles alrededor del punto de partida se cubren</span>
-          </div>
-          <label class="switch"><input type="checkbox" id="patrol" /><span>Patrullar en bucle cuando ya no queda zona nueva</span></label>
-        </section>
-
-        <section class="card span2">
-          <h3>Skills rápidas <span class="muted small">(clic = lanzar la skill)</span></h3>
-          <div id="skills" class="skills"></div>
         </section>
       </div>
     </section>
@@ -248,6 +214,29 @@
       </div>
     </section>
 
+    <!-- ============ CAPTURA ============ -->
+    <section class="pane" data-pane="captura">
+      <div class="grid">
+        <section class="card">
+          <h3>Captura (balls)</h3>
+          <div class="muted small">Lanza una ball a los cuerpos derrotados (por Lua, sin mover el cursor).</div>
+          <div class="field"><label>Ítem de la ball</label>
+            <input type="number" id="cap-item" class="mini" min="1" max="999999" value="2652" />
+            <span class="muted small">id del objeto que se lanza (2652 = ball normal)</span></div>
+          <div class="field"><label>Distancia de lanzamiento</label>
+            <input type="number" id="cap-range" class="mini" min="1" max="8" value="4" />
+            <span class="muted small">a cuántos tiles como máximo se lanza; si el cuerpo está más lejos, se acerca antes</span></div>
+          <div class="field"><label>Solo a estos Pokémon</label>
+            <input type="text" id="cap-names" placeholder="Charmander, Dratini" />
+            <span class="muted small">nombres separados por comas. Si pones alguno, se lanza SOLO a esos (aunque no sean shiny). Vacío = solo shinies</span></div>
+          <div class="field"><label>Nunca lanzar a</label>
+            <input type="text" id="cap-exclude" placeholder="Rattata" />
+            <span class="muted small">nombres separados por comas que se ignoran siempre (tiene prioridad sobre la lista anterior)</span></div>
+          <label class="switch"><input type="checkbox" id="catchall" /><span>Lanzar a TODOS los derrotados (no solo shinies)</span></label>
+        </section>
+      </div>
+    </section>
+
     <!-- ============ EQUIPO ============ -->
     <section class="pane" data-pane="equipo">
       <div class="grid">
@@ -285,6 +274,9 @@
           <h3>Mapa <span class="muted small" id="mapinfo"></span></h3>
           <div class="mapctrls">
             <button id="m-follow" class="mini" title="Centrar el mapa en el jugador">Seguir</button>
+            <button id="m-center" class="mini" title="Centrar el mapa en el personaje (una vez)">Centrar</button>
+            <button id="m-floor-up" class="mini" title="Piso superior (z−1)">▲</button>
+            <button id="m-floor-down" class="mini" title="Piso inferior (z+1)">▼</button>
             <button id="m-mode" class="mini" title="Ver el color del minimapa o la transitabilidad (dónde se puede caminar)">Ver: color</button>
             <button id="m-zoomin" class="mini" title="Acercar">+</button>
             <button id="m-zoomout" class="mini" title="Alejar">−</button>
@@ -305,7 +297,7 @@
             <input id="m-route-name" class="mini" placeholder="nombre de ruta" />
             <button id="m-saveas" class="mini primary" title="Guarda la ruta actual con un nombre">Guardar como</button>
           </div>
-          <canvas id="map" width="1200" height="680"></canvas>
+          <canvas id="map" width="1200" height="500"></canvas>
           <div class="muted small" id="maproute">ruta: 0 waypoints</div>
         </section>
 
@@ -318,6 +310,37 @@
             <input type="number" id="idlesecs" class="mini" min="0" max="600" value="42" />
             <span class="muted small">segundos que espera al llegar al waypoint 0</span></div>
         </section>
+
+        <section class="card">
+          <h3>Comportamientos</h3>
+          <div id="behaviors" class="toggles"></div>
+          <div class="muted small" style="margin-top:10px; line-height:1.6">
+            <b>crisis</b>: pausa si te ve un jugador/GM o si la vida es crítica ·
+            <b>combat</b>: junta enemigos (lure) y pelea ·
+            <b>loot</b>: recoge los cuerpos ·
+            <b>revive</b>: revive/resetea el Pokémon ·
+            <b>explore</b>: explora y patrulla la zona
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Exploración</h3>
+          <div class="muted small">Cubre una zona cuando no hay una ruta dibujada.</div>
+          <div class="field"><label>Punto de partida</label>
+            <div class="inline">
+              <code id="home">—</code>
+              <button id="btn-home" class="mini" title="Usa tu posición actual como inicio de la exploración">Fijar aquí</button>
+              <button id="btn-home-clear" class="mini ghost" title="Borra el punto de partida">Limpiar</button>
+            </div>
+            <span class="muted small">centro de la zona a explorar</span>
+          </div>
+          <div class="field"><label>Radio de exploración</label>
+            <input type="range" id="radius" min="10" max="200" step="5" value="60" />
+            <span id="radius-txt" class="muted">60</span>
+            <span class="muted small">cuántos tiles alrededor del punto de partida se cubren</span>
+          </div>
+          <label class="switch"><input type="checkbox" id="patrol" /><span>Patrullar en bucle cuando ya no queda zona nueva</span></label>
+        </section>
       </div>
     </section>
 
@@ -329,6 +352,11 @@
           <div class="muted small">Marca con ✔ las skills que se usarán en cada lure (en el orden de la lista) y pulsa <b>Guardar combo lure</b>. Sin ninguna marcada, el lure usa su lógica por defecto.</div>
           <div id="psk" class="psk"></div>
           <div id="psk-info" class="muted small"></div>
+        </section>
+
+        <section class="card span2">
+          <h3>Skills rápidas <span class="muted small">(clic = lanzar la skill)</span></h3>
+          <div id="skills" class="skills"></div>
         </section>
       </div>
     </section>
@@ -376,6 +404,38 @@
           <div class="small bad" id="tel-error"></div>
           <h4>Últimas muertes</h4>
           <div id="tel-list" class="psk-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ============ TELEGRAM ============ -->
+    <section class="pane" data-pane="telegram">
+      <div class="grid">
+        <section class="card">
+          <h3>Telegram <span class="muted small" id="tg-state"></span></h3>
+          <div class="muted small">Avisos al móvil vía bot de Telegram. Créalo con <b>@BotFather</b> y pega el <b>token</b> y tu <b>chat id</b>.</div>
+          <label class="switch"><input type="checkbox" id="tg-enabled" /><span>Activar avisos</span></label>
+          <div class="field"><label>Bot token</label>
+            <input type="text" id="tg-token" placeholder="123456:ABC-DEF..." /></div>
+          <div class="field"><label>Chat id</label>
+            <input type="text" id="tg-chat" placeholder="123456789" /></div>
+          <div class="inline">
+            <button id="tg-test" class="mini primary">Enviar prueba</button>
+            <span class="muted small" id="tg-info">—</span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Avisos</h3>
+          <label class="switch"><input type="checkbox" id="tg-ev-death" /><span>Muerte del personaje</span></label>
+          <label class="switch"><input type="checkbox" id="tg-ev-player" /><span>Otro jugador cerca</span></label>
+          <label class="switch"><input type="checkbox" id="tg-ev-shiny" /><span>Shiny encontrado</span></label>
+          <label class="switch"><input type="checkbox" id="tg-ev-capture" /><span>Captura de Pokémon</span></label>
+          <label class="switch"><input type="checkbox" id="tg-ev-revives_out" /><span>Sin revives</span></label>
+          <label class="switch"><input type="checkbox" id="tg-ev-disconnect" /><span>Desconexión</span></label>
+          <div class="field"><label>Rango jugador</label>
+            <input type="number" id="tg-range" class="mini" min="1" max="30" value="7" />
+            <span class="muted small">distancia (tiles) a la que avisa de otro jugador</span></div>
         </section>
       </div>
     </section>
