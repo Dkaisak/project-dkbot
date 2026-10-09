@@ -1,5 +1,5 @@
 @echo off
-rem run_windows.bat - arranca dkbot en Windows:
+rem run_windows.bat - arranca ShinyBot en Windows:
 rem   1) compila la DLL del loader si falta,
 rem   2) inyecta el agente en pxgme.exe,
 rem   3) arranca la GUI web.

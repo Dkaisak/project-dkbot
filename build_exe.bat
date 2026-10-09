@@ -1,7 +1,7 @@
 @echo off
-rem build_exe.bat - empaqueta dkbot con PyInstaller (Windows).
-rem   dist\dkbot.exe      -> consola (CLI + app de escritorio / GUI web)
-rem   dist\dkbot-gui.exe  -> sin consola (doble clic -> app de escritorio)
+rem build_exe.bat - empaqueta ShinyBot con PyInstaller (Windows).
+rem   dist\shinybot.exe      -> consola (CLI + app de escritorio / GUI web)
+rem   dist\shinybot-gui.exe  -> sin consola (doble clic -> app de escritorio)
 rem Incluye la interfaz web (pxg_bot/web), el agente .lua, la DLL, el icono y
 rem config.json. Empaqueta pywebview/pystray/Pillow para la ventana nativa.
 rem Uso:  build_exe.bat
@@ -26,15 +26,15 @@ set COMMON=--noconfirm --clean --onefile ^
   --add-data "tools/icon.png;tools" ^
   --add-data "config.json;."
 
-echo [*] Empaquetando dkbot.exe (consola)...
-python -m PyInstaller %COMMON% --name dkbot --console main.py
+echo [*] Empaquetando shinybot.exe (consola)...
+python -m PyInstaller %COMMON% --name shinybot --console main.py
 if errorlevel 1 goto err
 
-echo [*] Empaquetando dkbot-gui.exe (sin consola)...
-python -m PyInstaller %COMMON% --name dkbot-gui --windowed main.py
+echo [*] Empaquetando shinybot-gui.exe (sin consola)...
+python -m PyInstaller %COMMON% --name shinybot-gui --windowed main.py
 if errorlevel 1 goto err
 
-echo [+] Listo en dist\. Ejecuta dist\dkbot-gui.exe (app de escritorio).
+echo [+] Listo en dist\. Ejecuta dist\shinybot-gui.exe (app de escritorio).
 goto done
 
 :err

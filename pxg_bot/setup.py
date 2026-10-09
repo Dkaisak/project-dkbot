@@ -151,7 +151,7 @@ def update_agent_dir(agent_path: str, new_base: str) -> str:
 def _python_interpreter() -> str:
     """Interprete Python real para lanzar scripts auxiliares (Linux).
 
-    Congelado con PyInstaller, `sys.executable` es el propio binario `dkbot`,
+    Congelado con PyInstaller, `sys.executable` es el propio binario `shinybot`,
     que no puede ejecutar `tools/install_agent.py`; se usa el `python3` del
     sistema (con `python` como alternativa).
     """

@@ -216,7 +216,7 @@ def capture_screen(pid=None):
 
 TEXTS = {
     "es": {
-        "help": ("<b>DKBot — comandos</b>\n"
+        "help": ("<b>ShinyBot — comandos</b>\n"
                  "/start · /iniciar · /começar — arrancar el bot\n"
                  "/stop · /detener · /parar — parar el bot\n"
                  "/pause · /pausar — pausar\n"
@@ -287,7 +287,7 @@ TEXTS = {
         "fly_fail": "⚠ No se pudo enviar el comando de vuelo: {error}",
     },
     "en": {
-        "help": ("<b>DKBot — commands</b>\n"
+        "help": ("<b>ShinyBot — commands</b>\n"
                  "/start · /iniciar · /começar — start the bot\n"
                  "/stop · /detener · /parar — stop the bot\n"
                  "/pause · /pausar — pause\n"
@@ -358,7 +358,7 @@ TEXTS = {
         "fly_fail": "⚠ Could not send the fly command: {error}",
     },
     "pt": {
-        "help": ("<b>DKBot — comandos</b>\n"
+        "help": ("<b>ShinyBot — comandos</b>\n"
                  "/start · /iniciar · /começar — iniciar o bot\n"
                  "/stop · /detener · /parar — parar o bot\n"
                  "/pause · /pausar — pausar\n"

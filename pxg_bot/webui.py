@@ -295,7 +295,7 @@ class Dashboard:
         chat = str(body.get("chat_id") or cfg.get("chat_id") or "")
         parse = str(body.get("parse_mode") or cfg.get("parse_mode", "HTML") or "")
         ok, err = send_message(
-            token, chat, "✅ Prueba de dkbot: los avisos por Telegram funcionan.", parse)
+            token, chat, "✅ Prueba de ShinyBot: los avisos por Telegram funcionan.", parse)
         return {"ok": ok, "error": err}
 
     # --- whatsapp (CallMeBot, solo salida) ---
@@ -353,8 +353,34 @@ class Dashboard:
             if body.get(k):
                 cfg[k] = body[k]
         ok, err = send_whatsapp(
-            cfg, "✅ Prueba de dkbot: los avisos por WhatsApp funcionan.")
+            cfg, "✅ Prueba de ShinyBot: los avisos por WhatsApp funcionan.")
         return {"ok": ok, "error": err}
+
+    # --- licencia ---
+    def license(self) -> dict:
+        cfg = load_config(self.cfg_path)
+        status = _read_json(self.status_file).get("license") or {}
+        return {"config": cfg.get("license", {}) or {}, "status": status}
+
+    def patch_license(self, body: dict) -> dict:
+        key = str((body or {}).get("key", "") or "").strip().upper()
+        try:
+            with open(self.cfg_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return {"ok": False, "error": "no se pudo leer config.json"}
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "config invalido"}
+        data.setdefault("license", {})["key"] = key
+        try:
+            tmp = self.cfg_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, ensure_ascii=False)
+            os.replace(tmp, self.cfg_path)
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        self._apply_cfg(load_config(self.cfg_path))
+        return {"ok": True, "key": key}
 
     # --- comandos entrantes por Telegram (long-poll) ---
     def start_telegram_commands(self) -> None:
@@ -1103,6 +1129,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.app.telegram())
         elif path == "/api/whatsapp":
             self._json(self.app.whatsapp())
+        elif path == "/api/license":
+            self._json(self.app.license())
         elif path == "/api/config":
             self._json(self.app.config())
         elif path == "/api/log":
@@ -1194,6 +1222,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.app.patch_whatsapp(body))
         elif path == "/api/whatsapp/test":
             self._json(self.app.test_whatsapp(body))
+        elif path == "/api/license":
+            self._json(self.app.patch_license(body))
         elif path == "/api/attach":
             self._json(self.app.attach_client(body.get("process_name")))
         elif path == "/api/bot":

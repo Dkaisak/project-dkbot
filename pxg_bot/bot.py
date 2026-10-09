@@ -37,6 +37,7 @@ class Bot:
         self.llm = self._build_llm(cfg)
         self.telemetry = self._build_telemetry(cfg)
         self.notifier = self._build_notifier(cfg)
+        self.license = self._build_license(cfg)
         self.loot_items = self._build_loot_items(cfg)
         self.bb.loot_items = self.loot_items
         self._last_loot_save = 0.0
@@ -128,6 +129,12 @@ class Bot:
         from .loot_items import LootItems
 
         return LootItems(os.path.join(base, "pxg_loot_items.json"))
+
+    def _build_license(self, cfg: dict):
+        from . import paths
+        from .license import License
+
+        return License(cfg, paths.APP_DIR)
 
     def _build_world(self, cfg: dict):
         base = self.status_file or self.control_file or ""
@@ -496,6 +503,7 @@ class Bot:
                 {"name": t.get("name", ""), "shiny": bool(t.get("shiny"))}
                 for t in self.bb.notes.get("capture_pending", [])
             ],
+            "license": self.license.status() if self.license is not None else {"enforced": False},
             "llm": self.llm.status() if self.llm is not None else {"enabled": False},
             "telemetry": self.telemetry.status() if self.telemetry is not None else {"enabled": False},
             "telegram": notifiers.get("telegram"),
@@ -568,6 +576,9 @@ class Bot:
             log_every = max(1, int(self.cfg.get("settings", {}).get("log_every", 1) or 1))
         except (TypeError, ValueError):
             log_every = 1
+        if self.license is not None and not self.license.check():
+            print("[licencia] %s" % (self.license.error or "licencia invalida"))
+            return
         self._write_pid()
         if self.llm is not None:
             self.llm.start()
@@ -577,6 +588,10 @@ class Bot:
             while max_ticks is None or self.loops < max_ticks:
                 self.loops += 1
                 self.refresh_control()
+                if self.license is not None and self.license.due():
+                    if not self.license.check():
+                        print("[licencia] %s" % (self.license.error or "licencia invalida"))
+                        break
                 busy = self.last_chosen not in (None, "idle", "break")
                 if self._should_break(busy):
                     self.write_status("break", None)

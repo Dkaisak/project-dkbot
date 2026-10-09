@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DKBot — Panel</title>
+  <title>ShinyBot — Panel</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -18,7 +18,7 @@
         <circle cx="32" cy="32" r="6" fill="#f4f6fa"/>
       </svg>
       <div class="brandtext">
-        <strong>DKBot</strong>
+        <strong>ShinyBot</strong>
         <span class="muted small" id="who">—</span>
       </div>
       <span class="dot" id="conn" title="conexión con el cliente"></span>
@@ -104,6 +104,17 @@
         <section class="card span2">
           <h3>Captura / shiny</h3>
           <div class="muted small" id="shiny-info">—</div>
+        </section>
+
+        <section class="card span2">
+          <h3>Licencia</h3>
+          <div class="field"><label>Clave</label>
+            <input type="text" id="lic-key" placeholder="DK-XXXX-XXXX-XXXX" /></div>
+          <div class="inline">
+            <button id="lic-save" class="mini primary">Guardar clave</button>
+            <span class="muted small" id="lic-info">—</span>
+          </div>
+          <div class="muted small" id="lic-mid">—</div>
         </section>
 
         <section class="card span2">
@@ -626,13 +637,13 @@
       function show(name) {
         tabs.forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
         panes.forEach((p) => p.classList.toggle("active", p.dataset.pane === name));
-        try { localStorage.setItem("dkbotTab", name); } catch (e) {}
+        try { localStorage.setItem("shinybotTab", name); } catch (e) {}
         try { history.replaceState(null, "", "#" + name); } catch (e) {}
         window.dispatchEvent(new Event("resize"));
       }
       tabs.forEach((t) => t.addEventListener("click", () => show(t.dataset.tab)));
       let saved = (location.hash || "").replace("#", "");
-      if (!saved) { try { saved = localStorage.getItem("dkbotTab") || "panel"; } catch (e) { saved = "panel"; } }
+      if (!saved) { try { saved = localStorage.getItem("shinybotTab") || "panel"; } catch (e) { saved = "panel"; } }
       if (!panes.some((p) => p.dataset.pane === saved)) saved = "panel";
       show(saved);
     })();

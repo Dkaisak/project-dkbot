@@ -1336,8 +1336,8 @@ def test_lure_gather_timeout() -> None:
 
 
 def test_lure_remata_no_vuelve_a_ruta() -> None:
-    """Con enemigos vivos (aunque sean menos que X o esten fuera de rango) el lure
-    NO vuelve a la ruta: los persigue para rematarlos."""
+    """Con enemigos vivos (aunque esten fuera de rango) el lure NO vuelve a la
+    ruta; pero NO camina hacia ellos (pelea solo lo que entra en rango)."""
     st = make_state()
     st.pokemon_pos = (100, 100, 7)
     st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
@@ -1352,11 +1352,11 @@ def test_lure_remata_no_vuelve_a_ruta() -> None:
     assert bb.notes.get("lure_state") == "fight", "con enemigo vivo no resume"
     inp = RecInput()
     cb.act(st, bb, inp)
-    assert inp.moves, "debe caminar hacia el enemigo (chase)"
+    assert not inp.moves, "no debe caminar hacia el enemigo"
     st.creatures = []
     assert cb.evaluate(st, bb) is True
     assert bb.notes.get("lure_state") == "resume", "sin enemigos -> resume"
-    print("OK lure: con enemigos vivos remata (no vuelve a la ruta)")
+    print("OK lure: con enemigos vivos no vuelve a la ruta (y no camina hacia ellos)")
 
 
 def test_lure_tope_wait() -> None:
@@ -1651,6 +1651,72 @@ def test_tail_efficient() -> None:
     print("OK log: _tail lee solo el final")
 
 
+def test_license_client() -> None:
+    """Licencia (cliente): cache firmada, gracia offline y expiracion."""
+    import json
+    import os as _os
+    import tempfile
+    from pxg_bot.license import License, _sign, machine_id
+    d = tempfile.mkdtemp()
+    # sin server -> no se aplica (desarrollo)
+    lic = License({"license": {}}, d)
+    assert lic.enforced() is False and lic.check() is True
+    # con server pero sin clave -> bloquea
+    lic2 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s", "key": ""}}, d)
+    assert lic2.enforced() is True and lic2.check() is False
+    # cache valida dentro de la gracia (server inalcanzable)
+    state = {"key": "DK-AAAA-BBBB-CCCC", "plan": "7d", "expires_at": time.time() + 5 * 86400,
+             "machine_id": machine_id(), "last_ok": time.time()}
+    payload = dict(state)
+    payload["sig"] = _sign("s", state)
+    with open(_os.path.join(d, "pxg_license.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    lic3 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s",
+                                "key": "DK-AAAA-BBBB-CCCC"}}, d)
+    assert lic3.check() is True, "server caido -> usa la cache (gracia)"
+    # cache expirada -> bloquea
+    state["expires_at"] = time.time() - 10
+    payload = dict(state)
+    payload["sig"] = _sign("s", state)
+    with open(_os.path.join(d, "pxg_license.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    lic4 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s",
+                                "key": "DK-AAAA-BBBB-CCCC"}}, d)
+    assert lic4.check() is False
+    # cache manipulada (firma invalida) -> se ignora
+    payload = dict(state)
+    payload["expires_at"] = time.time() + 999 * 86400
+    payload["sig"] = "malo"
+    with open(_os.path.join(d, "pxg_license.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    lic5 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s",
+                                "key": "DK-AAAA-BBBB-CCCC"}}, d)
+    assert lic5.state == {}, "una cache con firma invalida debe ignorarse"
+    print("OK licencia: cache firmada, gracia offline y expiracion")
+
+
+def test_license_server_db() -> None:
+    """Licencia (servidor): multi-dispositivo, extension y revocacion."""
+    import os as _os
+    import tempfile
+    from licserver import db
+    p = _os.path.join(tempfile.mkdtemp(), "l.db")
+    db.init(p)
+    conn = db.connect(p)
+    key = db.create_license(conn, "7d", 7, max_devices=2)
+    assert db.get_license(conn, key)["plan"] == "7d"
+    assert db.register_device(conn, key, "m1") is True
+    assert db.register_device(conn, key, "m2") is True
+    assert db.register_device(conn, key, "m3") is False, "max 2 dispositivos"
+    assert db.is_registered(conn, key, "m1") is True
+    assert db.unregister_device(conn, key, "m1") is True
+    assert db.register_device(conn, key, "m3") is True
+    assert db.extend_license(conn, key, 30) is True
+    assert db.set_active(conn, key, False) is True
+    assert db.get_license(conn, key)["active"] == 0
+    print("OK licencia: servidor (db) multi-dispositivo")
+
+
 def test_recovery_reconnect_same_character() -> None:
     """Al desconectar reconecta el MISMO personaje (o el fijo de config)."""
     rec = RecoveryBehavior({"enabled": True, "retry_secs": 0.0}, {})
@@ -1905,6 +1971,8 @@ def main() -> int:
     test_loot_whitelist()
     test_loot_items_learn()
     test_tail_efficient()
+    test_license_client()
+    test_license_server_db()
     test_recovery_reconnect_same_character()
     test_recovery_death_teleport_recall()
     test_recovery_summons_teleport_pokemon()

@@ -103,7 +103,7 @@ def send_photo(token: str, chat_id: str, photo: bytes, filename: str = "screen.p
         return False, "falta bot_token o chat_id"
     if not photo:
         return False, "sin imagen"
-    boundary = "----dkbot%d" % int(time.time() * 1000)
+    boundary = "----shinybot%d" % int(time.time() * 1000)
     parts = []
 
     def field(name: str, value: str) -> None:
@@ -286,7 +286,7 @@ class Notifier:
 
     def test(self) -> dict:
         label = "WhatsApp" if self.section == "whatsapp" else "Telegram"
-        ok, err = self._send("✅ Prueba de dkbot: los avisos por %s funcionan." % label)
+        ok, err = self._send("✅ Prueba de ShinyBot: los avisos por %s funcionan." % label)
         if ok:
             self.sent += 1
         return {"ok": ok, "error": err}

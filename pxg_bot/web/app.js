@@ -754,6 +754,37 @@ async function pollWhatsapp() {
   renderWhatsappStatus(r.status || {});
 }
 
+/* ---------------- licencia ---------------- */
+function renderLicenseStatus(st, cfg) {
+  st = st || {}; cfg = cfg || {};
+  const mid = document.getElementById("lic-mid");
+  if (mid) mid.textContent = "ID de esta máquina: " + (st.machine_id || "—");
+  const info = document.getElementById("lic-info");
+  if (!info) return;
+  if (!cfg.server_url && !st.plan) {
+    info.textContent = "sin licencia configurada (modo desarrollo)";
+    return;
+  }
+  const parts = [];
+  if (st.plan) parts.push("plan: " + st.plan);
+  if (st.expires_at) parts.push("expira: " + new Date(st.expires_at * 1000).toLocaleString());
+  if (st.remaining_days != null) parts.push("quedan: " + Number(st.remaining_days).toFixed(1) + " días");
+  if (st.error) parts.push("estado: " + st.error);
+  info.textContent = parts.join("  ·  ") || "—";
+}
+
+async function loadLicense() {
+  const r = await api("/api/license");
+  const key = document.getElementById("lic-key");
+  if (key && document.activeElement !== key) key.value = (r.config || {}).key || "";
+  renderLicenseStatus(r.status || {}, r.config || {});
+}
+
+async function pollLicense() {
+  const r = await api("/api/license");
+  renderLicenseStatus(r.status || {}, r.config || {});
+}
+
 async function refreshRoutes() {
   const data = await api("/api/routes");
   const sel = document.getElementById("m-routes");
@@ -1147,6 +1178,14 @@ function wire() {
     waTest.disabled = false;
     waTest.textContent = old;
   };
+  const licSave = document.getElementById("lic-save");
+  if (licSave) licSave.onclick = async () => {
+    const el = document.getElementById("lic-key");
+    const r = await api("/api/license", "POST", { key: (el ? el.value : "").trim() });
+    alert(r.ok ? "Clave guardada. Reinicia el bot para aplicarla."
+               : "Error: " + (r.error || "desconocido"));
+    loadLicense();
+  };
   document.getElementById("btn-pause").onclick = () => api("/api/control", "POST", { paused: !(lastState.paused) });
   document.getElementById("btn-panic").onclick = async () => {
     await api("/api/command", "POST", { cmd: "stop" });
@@ -1322,6 +1361,7 @@ loadRecovery();
 loadProcess();
 loadTelegram();
 loadWhatsapp();
+loadLicense();
 loadRouteIntoEditor();
 refreshRoutes();
 refreshPokemonSkills();
@@ -1335,6 +1375,7 @@ setInterval(refreshLootItems, 8000);
 setInterval(pollDeaths, 3000);
 setInterval(pollTelegram, 6000);
 setInterval(pollWhatsapp, 6000);
+setInterval(pollLicense, 8000);
 pollState();
 pollWorld();
 pollDeaths();

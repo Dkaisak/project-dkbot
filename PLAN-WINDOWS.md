@@ -1,7 +1,7 @@
-# Plan — Port de `dkbot` a Windows (inyección por DLL)
+# Plan — Port de `ShinyBot` a Windows (inyección por DLL)
 
 > Este documento es un plan de trabajo autocontenido para una sesión de OpenCode
-> en **Windows**. El objetivo es que el bot `dkbot` (bot AFK para PokeXGames)
+> en **Windows**. El objetivo es que el bot `ShinyBot` (bot AFK para PokeXGames)
 > funcione en Windows igual que en Linux, cargando el agente Lua dentro de
 > `pxgme.exe` mediante una **DLL** inyectada (en Linux se usa `gdb`).
 
@@ -9,7 +9,7 @@
 
 ## 0. Contexto del proyecto (resumen)
 
-`dkbot` controla el cliente nativo de PokeXGames (`pxgme.exe`) **sin usar la
+`ShinyBot` controla el cliente nativo de PokeXGames (`pxgme.exe`) **sin usar la
 ventana**. La arquitectura es:
 
 - **Bot Python** (`main.py`, `pxg_bot/`): bucle de decisión por *tick*. Lee el

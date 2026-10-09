@@ -2540,7 +2540,7 @@ local function execTick()
   pcall(function() PXG_EVENT_EXEC = g_eventDispatcher.schedule(execTick, 60) end)
 end
 
--- Boton in-game de DKBot: al pulsarlo escribe una peticion que el supervisor
+-- Boton in-game de ShinyBot: al pulsarlo escribe una peticion que el supervisor
 -- (la GUI) lee para iniciar/parar el bot. Se recrea si desaparece.
 local UIREQ = DIR .. "/pxg_bot_ui.txt"
 local function uiRequest(cmd)
@@ -2551,7 +2551,7 @@ end
 local function ensureBotButton()
   local root = g_ui.getRootWidget()
   if not root then return end
-  local b = root:recursiveGetChildById("dkbotButton")
+  local b = root:recursiveGetChildById("shinybotButton")
   if not b then
     local okc, nb = pcall(function() return UIButton.create() end)
     if not okc or not nb then return end
@@ -2561,9 +2561,9 @@ local function ensureBotButton()
   pcall(function()
     local style = g_ui.getRootStyler():getStyle("GreenSmallButton")
     if style then b:applyStyle(style) end
-    b:setId("dkbotButton")
-    b:setText("DKBot")
-    b:setTooltip("Iniciar / parar DKBot")
+    b:setId("shinybotButton")
+    b:setText("ShinyBot")
+    b:setTooltip("Iniciar / parar ShinyBot")
     b:setWidth(72)
     b:setHeight(20)
     b:setPosition({ x = 8, y = 8 })

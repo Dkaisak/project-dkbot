@@ -109,7 +109,7 @@ def _start_tray(app: Dashboard, window, icon_path: str | None, state: dict):
         Menu.SEPARATOR,
         MenuItem("Salir", do_quit),
     )
-    tray = pystray.Icon("dkbot", image, "dkbot", menu)
+    tray = pystray.Icon("shinybot", image, "ShinyBot", menu)
     threading.Thread(target=tray.run, daemon=True).start()
     return tray
 
@@ -153,7 +153,7 @@ def run(cfg_path: str, host: str | None = None, port: int | None = None) -> int:
         return 1
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     url = f"http://{host}:{port}/"
-    print(f"dkbot app en {url}")
+    print(f"ShinyBot app en {url}")
 
     try:
         import webview
@@ -167,7 +167,7 @@ def run(cfg_path: str, host: str | None = None, port: int | None = None) -> int:
     minimize_on_close = bool(tray_cfg.get("minimize_on_close", True))
 
     window = webview.create_window(
-        win.get("title", "dkbot"),
+        win.get("title", "ShinyBot"),
         url,
         width=int(win.get("width", 1280)),
         height=int(win.get("height", 860)),

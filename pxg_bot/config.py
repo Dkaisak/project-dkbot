@@ -90,6 +90,16 @@ DEFAULT_SHINY = {
 
 DEFAULT_LUA = _lua_paths(DEFAULT_MYDATA)
 
+# Licencia (servidor propio). En desarrollo deja `server_url` vacio: no se aplica.
+DEFAULT_LICENSE = {
+    "key": "",
+    "server_url": "",
+    "secret": "",
+    "grace_hours": 12.0,
+    "recheck_hours": 6.0,
+    "version": "",
+}
+
 DEFAULT_UI = {
     "port": 8765,
     "host": "127.0.0.1",
@@ -99,7 +109,7 @@ DEFAULT_UI = {
     "mode": "app",
     "debug": False,
     "icon": "tools/icon.ico",
-    "window": {"width": 1280, "height": 860, "title": "DKBot", "on_top": False},
+    "window": {"width": 1280, "height": 860, "title": "ShinyBot", "on_top": False},
     "tray": {"enabled": True, "minimize_on_close": True},
 }
 
@@ -327,6 +337,7 @@ def load_config(path: str) -> dict:
     raw["ui"] = deep_merge(DEFAULT_UI, raw.get("ui", {}))
     raw["telemetry"] = deep_merge(DEFAULT_TELEMETRY, raw.get("telemetry", {}))
     raw["shiny"] = deep_merge(DEFAULT_SHINY, raw.get("shiny", {}))
+    raw["license"] = deep_merge(DEFAULT_LICENSE, raw.get("license", {}))
     raw["llm"] = deep_merge(DEFAULT_LLM, raw.get("llm", {}))
     raw["telegram"] = deep_merge(DEFAULT_TELEGRAM, raw.get("telegram", {}))
     raw["whatsapp"] = deep_merge(DEFAULT_WHATSAPP, raw.get("whatsapp", {}))

@@ -1,4 +1,4 @@
-# dkbot — Bot AFK para PokeXGames
+# ShinyBot — Bot AFK para PokeXGames
 
 Documento de referencia del proyecto: qué es, cómo está construido, qué tiene
 implementado y cómo se opera.
@@ -7,7 +7,7 @@ implementado y cómo se opera.
 
 ## 1. Qué es
 
-`dkbot` es un **bot 100% AFK** para **PokeXGames** (un MMO de Pokémon basado en
+`ShinyBot` es un **bot 100% AFK** para **PokeXGames** (un MMO de Pokémon basado en
 OTClient). Controla el cliente nativo de Linux (`pxgme-linux`) sin usar la
 ventana: el estado del juego se lee y las acciones se ejecutan **dentro del
 propio proceso del cliente** mediante un agente Lua inyectado.
@@ -181,11 +181,10 @@ pantalla o ante un revive urgente).
     enemigos → `resume`.
   - **resume**: clic central, limpia estado, pausa `resume_pause_secs` → `idle`.
   - **Rematar**: el lure **no vuelve a la ruta mientras haya enemigos en
-    pantalla** (aunque sean menos que `lure_visible_min` o estén **fuera de
-    rango**): se queda en `hold`/`fight` y **persigue** al enemigo visible más
-    cercano (camina hacia él) hasta matarlo. Solo pasa a `resume` (y vuelve a la
-    ruta) cuando **no queda ninguno**. Así remata al que quedó vivo o al nuevo que
-    llegó antes de retomar la ruta.
+    pantalla** (aunque sean menos que `lure_visible_min`): se queda en
+    `hold`/`fight` y pelea **lo que entra en rango** hasta matarlo. **No camina
+    hacia el enemigo.** Solo pasa a `resume` (y vuelve a la ruta) cuando **no queda
+    ninguno**.
   - Única excepción al gate: **`panic_hp`** (vida baja del Pokémon).
 - **Buff en el lure**: lanza **una vez** la skill de buff (efecto con componente
   `buff`, p. ej. `buff/nevermiss`) cuando hay `buff_visible_min` enemigos en
@@ -602,7 +601,7 @@ Endpoints:
 La barra superior tiene los controles: **Atachar**, **Iniciar**, **Detener**,
 **Pausar** y **Pánico**.
 
-**Botón in-game**: el agente dibuja un botón **DKBot** en la esquina superior
+**Botón in-game**: el agente dibuja un botón **ShinyBot** en la esquina superior
 izquierda del cliente; al pulsarlo escribe `pxg_bot_ui.txt` y la GUI (que hace de
 *supervisor*) **arranca o para** el bot. Requiere la GUI en marcha (es quien
 vigila ese fichero).
@@ -772,8 +771,8 @@ python main.py gui          # modo web (navegador)
 
 build_exe.bat
 :: genera:
-::   dist\dkbot.exe       -> consola (CLI: run/scan/... + app/GUI)
-::   dist\dkbot-gui.exe   -> sin consola (doble clic -> app de escritorio)
+::   dist\shinybot.exe       -> consola (CLI: run/scan/... + app/GUI)
+::   dist\shinybot-gui.exe   -> sin consola (doble clic -> app de escritorio)
 ```
 
 La **app** (`pxg_bot/app.py`) reutiliza la UI web en una **ventana nativa**
@@ -845,8 +844,8 @@ El bot es Python puro + stdlib, así que corre en ambas plataformas.
 - **App de escritorio**: `pxg_bot/app.py` envuelve la UI en una ventana nativa
   (**pywebview/WebView2**) con **bandeja** (pystray) y cierre→minimizar. Sin esas
   dependencias cae al navegador (`gui`).
-- **Empaquetado**: `build_exe.bat` (PyInstaller) genera `dist\dkbot.exe` (consola,
-  CLI+app/GUI) y `dist\dkbot-gui.exe` (sin consola, app). La UI web, el agente
+- **Empaquetado**: `build_exe.bat` (PyInstaller) genera `dist\shinybot.exe` (consola,
+  CLI+app/GUI) y `dist\shinybot-gui.exe` (sin consola, app). La UI web, el agente
   `.lua`, la DLL, el icono y `config.json` van embebidos; `pxg_bot/paths.py`
   resuelve las rutas en modo "frozen" (datos en el bundle, ficheros escribibles
   junto al exe) y la app lanza el bot como subproceso del propio exe.
@@ -1135,3 +1134,32 @@ Telegram **y** WhatsApp. Todo editable en la GUI (pestaña *WhatsApp*).
 | `apikey` | `""` | API key de CallMeBot. |
 | `player_range` | `7` | Tiles a los que avisa de otro jugador. |
 | `events` / `cooldowns` | — | Igual que en Telegram (§24). |
+
+---
+
+## 26. Licencias (`licserver/` + `pxg_bot/license.py`)
+
+Producto de pago con **planes de 7 / 15 / 30 días** y **máximo de dispositivos**
+(def. 3).
+
+- **Servidor** (`licserver/`, FastAPI + SQLite): valida las claves, gestiona las
+  activaciones por dispositivo y **crea/renueva** claves por **webhook** de la
+  pasarela de pago. Guía autocontenida: `licserver/SETUP.md`; despliegue:
+  `licserver/DEPLOY.md`.
+  - `POST /api/activate` · `/api/verify` · `/api/deactivate` (peticiones firmadas
+    con HMAC; respuestas firmadas).
+  - `POST /api/webhook/{gateway}` → alta/renovación automática al pagar.
+  - Admin (cabecera `X-Admin-Token`): crear/listar/extender/revocar y ver los
+    dispositivos.
+- **Cliente** (`pxg_bot/license.py`): huella de máquina (`machine_id`), validación
+  **online** al arrancar y cada `recheck_hours`, **cache firmada**
+  (`pxg_license.json`) y **gracia offline** (`grace_hours`, def. 12 h). En
+  desarrollo (sin `server_url`) **no se aplica**.
+- **GUI**: tarjeta **Licencia** (clave, plan, expiración e id de máquina).
+- **Empaquetado**: `build_exe_obfuscated.bat` (**PyArmor** + PyInstaller); el
+  servidor y el secreto van dentro del binario ofuscado
+  (`_BUILTIN_SERVER` / `_BUILTIN_SECRET` en `pxg_bot/license.py`).
+
+Config (`config.json` → `license`): `key`, `server_url`, `secret`, `grace_hours`,
+`recheck_hours`. En producción la `server_url` y el `secret` van en el binario, no
+en el config.

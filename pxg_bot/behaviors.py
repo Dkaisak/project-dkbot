@@ -826,28 +826,6 @@ class CombatBehavior(Behavior):
             bb.notes.pop(k, None)
         return True
 
-    def _chase(self, state: GameState, bb: Blackboard, inp) -> bool:
-        """Camina hacia el enemigo visible mas cercano que este fuera de rango
-        (para rematar al que quedo vivo o al nuevo que llego). True si se movio
-        o ya esta caminando hacia el."""
-        vis = self._engaging_enemies(state)
-        if not vis:
-            return False
-        arange = int(self.cfg.get("attack_range", 3))
-        ref = self._ref_pos(state) or state.player.pos
-        out = [c for c in vis if ref.distance(c.pos) > arange]
-        if not out:
-            return False
-        if state.is_walking:
-            return True
-        tgt = min(out, key=lambda c: state.player.pos.distance(c.pos))
-        direction = state.player.pos.direction_to(tgt.pos)
-        if direction >= 0 and bb.ready("approach", float(self.cfg.get("approach_cooldown", 0.15))):
-            inp.move(direction)
-            bb.mark("approach")
-            return True
-        return False
-
     def _lure_hold(self, state: GameState, bb: Blackboard, inp) -> None:
         # detener la navegacion de la ruta (una vez)
         if not bb.notes.get("lure_stopped"):
@@ -855,15 +833,10 @@ class CombatBehavior(Behavior):
             bb.notes["lure_stopped"] = True
         # situar el ownsummon (una vez); el pokestop espera a que llegue
         self._lure_summon(state, bb, inp)
-        # si los enemigos estan fuera de rango, acercarse para rematarlos
-        if not self._attack_gate_ok(state):
-            self._chase(state, bb, inp)
 
     def _lure_fight(self, state: GameState, bb: Blackboard, inp) -> None:
         if not self._attack_gate_ok(state):
-            # gate caido (se separaron o hay uno nuevo lejos): acercarse a rematar
-            if self._chase(state, bb, inp):
-                return
+            # gate caido (se separaron): si persiste, volver a hold a reagrupar
             now = time.time()
             lost = bb.notes.get("lure_fight_lost")
             if not lost:
