@@ -598,5 +598,8 @@
       "revives_out": 60.0,
       "disconnect": 30.0
     }
+  },
+  "license": {
+    "key": ""
   }
 }

@@ -126,7 +126,8 @@ sqlite3 licenses.db ".backup '/backup/licenses-$(date +%F).db'"
 ## 9. Notas
 - El `LICENSE_SECRET` y la URL van **dentro del binario** ofuscado (PyArmor); el
   `config.json` no los necesita.
-- Sin el server accesible, el bot usa la **cache** con **gracia** (12 h por
-  defecto, `license.grace_hours`).
+- **Sin gracia offline**: si el server no es accesible, la licencia falla y el
+  bot **no arranca** (validación online obligatoria al arrancar y cada
+  `recheck_hours`). La cache firmada solo guarda el último estado, no autoriza.
 - La firma HMAC es un **deterrente**, no un candado: el bloqueo real es la
   validación online recurrente.

@@ -95,7 +95,6 @@ DEFAULT_LICENSE = {
     "key": "",
     "server_url": "",
     "secret": "",
-    "grace_hours": 12.0,
     "recheck_hours": 6.0,
     "version": "",
 }

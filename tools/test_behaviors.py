@@ -1652,11 +1652,15 @@ def test_tail_efficient() -> None:
 
 
 def test_license_client() -> None:
-    """Licencia (cliente): cache firmada, gracia offline y expiracion."""
+    """Licencia (cliente): sin gracia offline, cache firmada y expiracion."""
     import json
     import os as _os
     import tempfile
+    import pxg_bot.license as licmod
     from pxg_bot.license import License, _sign, machine_id
+    # aislar de las constantes embebidas (para probar la logica del cliente)
+    licmod._BUILTIN_SERVER = ""
+    licmod._BUILTIN_SECRET = ""
     d = tempfile.mkdtemp()
     # sin server -> no se aplica (desarrollo)
     lic = License({"license": {}}, d)
@@ -1664,35 +1668,27 @@ def test_license_client() -> None:
     # con server pero sin clave -> bloquea
     lic2 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s", "key": ""}}, d)
     assert lic2.enforced() is True and lic2.check() is False
-    # cache valida dentro de la gracia (server inalcanzable)
-    state = {"key": "DK-AAAA-BBBB-CCCC", "plan": "7d", "expires_at": time.time() + 5 * 86400,
+    # con clave pero server inalcanzable -> bloquea (sin gracia offline),
+    # aunque exista una cache firmada valida
+    state = {"key": "SH-AAAA-BBBB-CCCC", "plan": "7d", "expires_at": time.time() + 5 * 86400,
              "machine_id": machine_id(), "last_ok": time.time()}
     payload = dict(state)
     payload["sig"] = _sign("s", state)
     with open(_os.path.join(d, "pxg_license.json"), "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
     lic3 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s",
-                                "key": "DK-AAAA-BBBB-CCCC"}}, d)
-    assert lic3.check() is True, "server caido -> usa la cache (gracia)"
-    # cache expirada -> bloquea
-    state["expires_at"] = time.time() - 10
-    payload = dict(state)
-    payload["sig"] = _sign("s", state)
-    with open(_os.path.join(d, "pxg_license.json"), "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
-    lic4 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s",
-                                "key": "DK-AAAA-BBBB-CCCC"}}, d)
-    assert lic4.check() is False
+                                "key": "SH-AAAA-BBBB-CCCC"}}, d)
+    assert lic3.check() is False, "sin gracia offline: server caido -> bloquea"
     # cache manipulada (firma invalida) -> se ignora
     payload = dict(state)
     payload["expires_at"] = time.time() + 999 * 86400
     payload["sig"] = "malo"
     with open(_os.path.join(d, "pxg_license.json"), "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
-    lic5 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s",
-                                "key": "DK-AAAA-BBBB-CCCC"}}, d)
-    assert lic5.state == {}, "una cache con firma invalida debe ignorarse"
-    print("OK licencia: cache firmada, gracia offline y expiracion")
+    lic4 = License({"license": {"server_url": "http://127.0.0.1:1", "secret": "s",
+                                "key": "SH-AAAA-BBBB-CCCC"}}, d)
+    assert lic4.state == {}, "una cache con firma invalida debe ignorarse"
+    print("OK licencia: sin gracia offline, cache firmada")
 
 
 def test_license_server_db() -> None:

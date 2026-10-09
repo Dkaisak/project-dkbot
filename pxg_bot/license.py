@@ -2,10 +2,10 @@
 
 - `machine_id()`: huella de la maquina (Windows: `MachineGuid` + nº de volumen;
   en otros SO: hostname+arquitectura), hasheada. No identifica a la persona.
-- Al arrancar: valida **online**; si no hay red, usa la **cache** con **gracia
-  offline** (def. 12 h).
-- La cache (`pxg_license.json` junto al ejecutable) va **firmada** (HMAC) para
-  que no se pueda editar a mano sin el secreto.
+- Al arrancar: valida **online** de forma **obligatoria**. Si no hay red, la
+  licencia falla y el bot no arranca (**sin gracia offline**).
+- La cache (`pxg_license.json` junto al ejecutable) guarda el ultimo estado
+  valido, **firmada** (HMAC), solo para consulta; **no** autoriza a ejecutar.
 
 El secreto (`_BUILTIN_SECRET`) lo rellena el vendedor y queda **ofuscado** con
 PyArmor. Es un deterrente, no un candado: el bloqueo real es la validacion
@@ -23,7 +23,6 @@ import urllib.request
 
 _BUILTIN_SERVER = "https://lic.shinybot.online"  # URL del servidor de licencias
 _BUILTIN_SECRET = "2380e4d9852fdf5e57853388c4b3e086744cec3b0608b5d26622a220bc2d87fe"  # LICENSE_SECRET (mismo que el servidor)
-_DEFAULT_GRACE_HOURS = 12.0
 _DEFAULT_RECHECK_HOURS = 6.0
 
 
@@ -75,7 +74,6 @@ class License:
         self.key = str(lc.get("key", "") or "").strip().upper()
         self.server_url = (_BUILTIN_SERVER or str(lc.get("server_url", "") or "")).rstrip("/")
         self.secret = _BUILTIN_SECRET or str(lc.get("secret", "") or "")
-        self.grace_hours = float(lc.get("grace_hours", _DEFAULT_GRACE_HOURS) or _DEFAULT_GRACE_HOURS)
         self.recheck_hours = float(lc.get("recheck_hours", _DEFAULT_RECHECK_HOURS) or _DEFAULT_RECHECK_HOURS)
         self.version = str(lc.get("version", "") or "")
         self.base_dir = base_dir or "."
@@ -136,7 +134,7 @@ class License:
             return True
         if not self.key:
             self.error = "sin clave de licencia"
-            return self._cache_ok()
+            return False
         try:
             data = self._request("/api/verify", {"key": self.key, "machine_id": self.mid,
                                                  "version": self.version})
@@ -155,21 +153,7 @@ class License:
         except Exception as exc:
             self.online = False
             self.error = "offline (%s: %s)" % (type(exc).__name__, exc)
-            return self._cache_ok()
-
-    def _cache_ok(self) -> bool:
-        exp = float(self.state.get("expires_at", 0) or 0)
-        last = float(self.state.get("last_ok", 0) or 0)
-        if exp <= 0 or last <= 0:
             return False
-        now = time.time()
-        if exp <= now:
-            self.error = "licencia expirada"
-            return False
-        if now - last > self.grace_hours * 3600:
-            self.error = "gracia offline agotada"
-            return False
-        return True
 
     def due(self) -> bool:
         last = float(self.state.get("last_ok", 0) or 0)

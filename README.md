@@ -247,6 +247,12 @@ pantalla o ante un revive urgente).
   (`defeated[].items`, vía `tileItems`); con el loot off solo se lootean los
   cuerpos que contienen un ítem de la lista. Editable en la GUI (tarjeta *Loot*).
   Vacío = recoger todo (con el loot activado).
+- **Aprende nombre→id** (`pxg_bot/loot_items.py`): el cliente **no expone el
+  nombre** de un ítem (solo `id`/`count`), pero los nombres aparecen en los
+  mensajes `Botín de X: … (n)`. El bot asocia cada nombre al id que ve en
+  `defeated[].items` y guarda la tabla en `pxg_loot_items.json` (visible en la GUI
+  como *Ítems aprendidos*). Así puedes escribir **nombres** en la whitelist sin
+  conocer el id.
 - **Primero pelear**: el loot **cede mientras haya enemigos atacables en
   pantalla** (y al revive). Es la **última acción antes de seguir la ruta** —
   antes tenía prioridad 88 (> combat 70) y looteaba a media pelea, dejando al
@@ -590,11 +596,14 @@ Endpoints:
 - `GET /api/state`, `/api/log`, `/api/config`, `/api/world`, `/api/otmm`,
   `/api/otmm/info`, `/api/route`, `/api/routes`, `/api/pokemon_skills`,
   `/api/ignore`, `/api/deaths`, `/api/process` (clientes detectados),
-  `/api/telegram` (config + estado de avisos)
+  `/api/telegram` (config + estado de avisos), `/api/whatsapp` (config + estado),
+  `/api/license` (config + estado de la licencia), `/api/loot_items` (ítems
+  aprendidos)
 - `POST /api/bot` (start/stop), `/api/attach`, `/api/process` (fija el
   `process_name`), `/api/telegram` (guarda los avisos), `/api/telegram/test`
-  (mensaje de prueba), `/api/command`, `/api/control`,
-  `/api/config`, `/api/route`, `/api/routes`, `/api/routes/delete`,
+  (mensaje de prueba), `/api/whatsapp`, `/api/whatsapp/test`, `/api/license`
+  (guarda la clave), `/api/log/clear` (vacía el log), `/api/command`,
+  `/api/control`, `/api/config`, `/api/route`, `/api/routes`, `/api/routes/delete`,
   `/api/pokemon_skills/order`, `/api/pokemon_skills/lure_order`,
   `/api/pokemon_skills/delete`, `/api/ignore`
 
@@ -620,7 +629,9 @@ Pestañas y tarjetas:
   **Buff** (enemigos mínimos y **gate**: en pantalla / todos a rango / gate de
   combate) y **Pánico** (%, fuente de vida y skills).
 - **Loot**: alcance, enemigo cerca, cadencia de recogida, **whitelist de ítems**
-  (se recogen aunque el loot esté off), gracia, atasco, reenvío y fase.
+  (se recogen aunque el loot esté off; ver §5.2), **Ítems aprendidos** (tabla
+  `nombre → id` que el bot aprende del botín, para añadirlos a la whitelist sin
+  conocer el id), gracia, atasco, reenvío y fase.
 - **Captura** (pestaña propia): **Captura (balls)** — ítem, rango de lanzamiento,
   filtro `names`/`exclude` por nombre, *catch_all* y el toggle *"Dejar de lanzar
   balls al capturar el Pokémon"*.
@@ -644,6 +655,10 @@ Pestañas y tarjetas:
 - **Telegram**: avisos al móvil — activar/desactivar, token y chat id, qué
   eventos avisar (muerte, jugador, shiny, captura, sin revives, desconexión),
   rango de jugador y botón *Enviar prueba* (ver §24).
+- **WhatsApp**: canal **extra** de avisos (proveedor **Meta** Cloud API o
+  **CallMeBot**), teléfono, token/id, eventos y botón *Enviar prueba* (ver §25).
+- **Licencia**: clave, plan, expiración e **id de esta máquina**; el botón guarda
+  la clave en `config.json` (ver §26).
 - **Registro**: log del bot. Con **rotación por tamaño** (`ui.log_max_mb`, def.
   20 MB → `pxg_bot.log.1`) y botón **vaciar**. La pestaña lee solo el **final** del
   fichero, así un log grande no la bloquea. `settings.log_every` (def. 1) imprime
@@ -689,6 +704,8 @@ sobreescribe. La GUI edita `config.json` y el canal de control
 | `pxg_pokemon_skills.json` | Skills por Pokémon + orden de combo. |
 | `pxg_ignore.json` | Lista de ignorados (nombres + ids). |
 | `pxg_clans.json` | Mapa `skull → clan` (insignia de clan de los jugadores). |
+| `pxg_loot_items.json` | Tabla aprendida `nombre → id` de ítems de botín (whitelist). |
+| `pxg_license.json` | Último estado de licencia validado (firmado; **no** autoriza a ejecutar). |
 | `pxg_walkmap.txt` | Cache de transitabilidad escaneada por el agente. |
 | `minimap.otmm` | Minimapa del cliente (lo lee el bot). |
 
@@ -1152,14 +1169,81 @@ Producto de pago con **planes de 7 / 15 / 30 días** y **máximo de dispositivos
   - Admin (cabecera `X-Admin-Token`): crear/listar/extender/revocar y ver los
     dispositivos.
 - **Cliente** (`pxg_bot/license.py`): huella de máquina (`machine_id`), validación
-  **online** al arrancar y cada `recheck_hours`, **cache firmada**
-  (`pxg_license.json`) y **gracia offline** (`grace_hours`, def. 12 h). En
+  **online obligatoria** al arrancar y cada `recheck_hours` (**sin gracia
+  offline**: si no hay red, el bot no arranca). La cache firmada
+  (`pxg_license.json`) solo guarda el último estado, no autoriza. En
   desarrollo (sin `server_url`) **no se aplica**.
 - **GUI**: tarjeta **Licencia** (clave, plan, expiración e id de máquina).
 - **Empaquetado**: `build_exe_obfuscated.bat` (**PyArmor** + PyInstaller); el
   servidor y el secreto van dentro del binario ofuscado
   (`_BUILTIN_SERVER` / `_BUILTIN_SECRET` en `pxg_bot/license.py`).
 
-Config (`config.json` → `license`): `key`, `server_url`, `secret`, `grace_hours`,
+Config (`config.json` → `license`): `key`, `server_url`, `secret`,
 `recheck_hours`. En producción la `server_url` y el `secret` van en el binario, no
 en el config.
+
+### 26.1 Despliegue (estado actual)
+
+- **Dominio**: `shinybot.online`. **Web de venta** (Next) en `shinybot.online` /
+  `www.shinybot.online` → `127.0.0.1:3002`; **API de licencias** en
+  **`https://lic.shinybot.online`** → `127.0.0.1:8080`. Delante, **nginx +
+  certbot** (Let's Encrypt): ver `licserver/SETUP.md` §6 y `licserver/DEPLOY.md` §5.
+- **Secretos** (`/opt/shinybot-licenses/.env`): `LICENSE_SECRET` (el mismo que
+  `_BUILTIN_SECRET`), `ADMIN_TOKEN` (rutas `/api/admin`), `WEBHOOK_SECRET` (firma
+  del webhook), `DB_PATH`, `PLANS` (7/15/30 d) y `VARIANT_PLANS` (mapeo de la
+  pasarela). Se generan con `openssl rand -hex 32`.
+- **Binario del bot**: `_BUILTIN_SERVER = "https://lic.shinybot.online"` y
+  `_BUILTIN_SECRET` en `pxg_bot/license.py`, luego `build_exe_obfuscated.bat`.
+- **Admin (CLI)**: `python -m licserver.admin create --plan 30d --max-devices 3`,
+  `list`, `extend`, `revoke`, `devices`, `delete`.
+- **Prueba end-to-end**: crear clave (`POST /api/admin/licenses`), ponerla en la
+  GUI (tarjeta *Licencia*) y arrancar el bot → estado `online: true` con plan y
+  días restantes; el dispositivo queda registrado en el servidor (IP +
+  `machine_id`).
+
+---
+
+## 27. Historial de cambios (recientes)
+
+Resumen de lo incorporado en la última tanda de trabajo (para el detalle, ver la
+sección correspondiente):
+
+**Combate / behaviors**
+- **Tiempo de combo** configurable en la GUI (`revive.combo_time`): el temporizador
+  arranca con la **primera skill** y solo aplica si se usó combo; no corta la
+  animación antes de revivir (§5.3).
+- **Lure**: se **quitó** el comportamiento de "caminar hacia el enemigo"; el
+  **rematar** ya no vuelve a la ruta mientras haya enemigos en pantalla (§5.1).
+- **Rutas multi-piso**: waypoints con acción `subir`/`bajar` sobre la escalera
+  (el cliente cambia la `z` al pisarla); el densificado salta los tramos entre
+  pisos (§5.4).
+
+**Shiny / captura / loot**
+- **Detección de shiny por emblema** (`skull == 55`, exacta); el heurístico de
+  outfit queda solo como respaldo (`shiny.skull = 0`). No cuenta summons ni
+  duplica por tick (§11).
+- **Toggle "dejar de lanzar balls al capturar"** (`capture.stop_on_capture`, def.
+  **off**) (§11).
+- **Whitelist de loot por ítem** (id **o** nombre) que se recoge aunque el loot
+  esté off; el bot **aprende nombre→id** del botín (`pxg_bot/loot_items.py`,
+  `pxg_loot_items.json`, GUI *Ítems aprendidos*) (§5.2).
+- **Avisos de captura por Telegram** ya no se reenvían al reiniciar el bot
+  (`pxg_bot_seen.json`) (§24).
+
+**Avisos**
+- **WhatsApp** como canal **extra** (proveedor **Meta** Cloud API o **CallMeBot**),
+  en paralelo con Telegram y con los mismos eventos (§25).
+
+**Interfaz / mantenimiento**
+- **Log**: rotación por tamaño (`ui.log_max_mb`), lectura eficiente del final
+  (`_tail`), botón **vaciar** y `settings.log_every` (§13).
+
+**Licencias / distribución**
+- **Sistema de licencias** propio (FastAPI + SQLite + webhook), planes 7/15/30
+  días y máximo de dispositivos (§26).
+- **Sin gracia offline**: validación online obligatoria; si no hay red, el bot no
+  arranca (§26).
+- **Renombrado** del proyecto a **ShinyBot** (UI, mensajes, docs, binarios
+  `shinybot.exe` / `shinybot-gui.exe`, servicio `shinybot-licenses`).
+- **Empaquetado ofuscado** con PyArmor (`build_exe_obfuscated.bat`); servidor y
+  secreto embebidos en el binario (§26).
