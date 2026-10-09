@@ -66,8 +66,11 @@ class LuaBridge:
 
 
 class LuaStateSource:
-    def __init__(self, bridge: LuaBridge):
+    def __init__(self, bridge: LuaBridge, cfg: dict = None):
         self.bridge = bridge
+        # Emblema (skull) que PXG dibuja en los shinys salvajes. >0 = deteccion
+        # exacta por emblema; 0 = heuristico de outfit (tabla).
+        self.shiny_skull = int(((cfg or {}).get("shiny") or {}).get("skull", 0) or 0)
         from .shiny import ShinyTable
 
         self.shiny = ShinyTable(bridge.shiny_file) if bridge.shiny_file else None
@@ -146,6 +149,7 @@ class LuaStateSource:
                     is_player=bool(c.get("player")),
                     is_npc=bool(c.get("npc")),
                     is_wild=kind == CreatureKind.MONSTER,
+                    is_summon=bool(c.get("ownsummon")),
                     is_self=(c.get("name") == pname and (pos.x, pos.y, pos.z) == ppos),
                     outfit=c.get("outfit"),
                     uid=uid,
@@ -195,7 +199,13 @@ class LuaStateSource:
             for cr in match:
                 cr.is_summon = True
                 cr.is_wild = False
-        if self.shiny is not None:
+        # Deteccion de shiny: por el EMBLEMA (skull=55 en PXG), exacta; si no hay
+        # id configurado, cae al heuristico de outfit (tabla pxg_shiny.json).
+        if self.shiny_skull > 0:
+            for cr in creatures:
+                cr.shiny = (not cr.is_player and not cr.is_npc and not cr.is_summon
+                            and int(getattr(cr, "skull", 0) or 0) == self.shiny_skull)
+        elif self.shiny is not None:
             self.shiny.observe(creatures)
             for cr in creatures:
                 cr.shiny = self.shiny.is_shiny(cr)
@@ -218,6 +228,8 @@ class LuaStateSource:
         lv = data.get("loots")
         state.loots = int(lv) if isinstance(lv, (int, float)) else -1
         state.loot_msg = str(data.get("loot_msg", "") or "")
+        li = data.get("loot_ids")
+        state.loot_ids = list(li) if isinstance(li, list) else []
         state.active_pokemon_name = str(data.get("active_pokemon", "") or "")
         state.moves = data.get("moves", [])
         state.party = [

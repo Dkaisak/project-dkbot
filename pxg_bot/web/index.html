@@ -52,6 +52,7 @@
     <button class="tab" data-tab="ia">IA</button>
     <button class="tab" data-tab="ignorar">Ignorar</button>
     <button class="tab" data-tab="telegram">Telegram</button>
+    <button class="tab" data-tab="whatsapp">WhatsApp</button>
     <button class="tab" data-tab="log">Registro</button>
   </nav>
   </div>
@@ -98,6 +99,11 @@
         <section class="card span2">
           <h3>Contadores de sesión</h3>
           <div class="muted small" id="counters">—</div>
+        </section>
+
+        <section class="card span2">
+          <h3>Captura / shiny</h3>
+          <div class="muted small" id="shiny-info">—</div>
         </section>
 
         <section class="card span2">
@@ -208,6 +214,12 @@
           <div class="field"><label>Recoger cada (s)</label>
             <input type="number" id="loot-collect" class="mini" min="0" max="10" step="0.1" value="1" />
             <span class="muted small">tiempo entre intentos de recoger los cuerpos que tiene al lado</span></div>
+          <div class="field"><label>Solo recoger si contiene (whitelist)</label>
+            <input type="text" id="loot-whitelist" placeholder="pot of lava, essences of fire" />
+            <span class="muted small">nombres (o ids) separados por comas que se recogen <b>aunque el loot esté desactivado</b>. Vacío = recoger todo (con el loot activado)</span></div>
+          <div class="field"><label>Ítems aprendidos</label>
+            <div id="loot-items" class="muted small" style="line-height:1.9">—</div>
+            <span class="muted small">nombres que el bot aprendió de los mensajes de botín (clic para añadir a la whitelist)</span></div>
         </section>
 
         <section class="card">
@@ -243,10 +255,15 @@
           <div class="field"><label>Solo a estos Pokémon</label>
             <input type="text" id="cap-names" placeholder="Charmander, Dratini" />
             <span class="muted small">nombres separados por comas. Si pones alguno, se lanza SOLO a esos (aunque no sean shiny). Vacío = solo shinies</span></div>
+          <label class="switch"><input type="checkbox" id="cap-stop" />
+            <span>Dejar de lanzar balls al capturar el Pokémon (no gasta balls de más en uno ya capturado)</span></label>
           <div class="field"><label>Nunca lanzar a</label>
             <input type="text" id="cap-exclude" placeholder="Rattata" />
             <span class="muted small">nombres separados por comas que se ignoran siempre (tiene prioridad sobre la lista anterior)</span></div>
           <label class="switch"><input type="checkbox" id="catchall" /><span>Lanzar a TODOS los derrotados (no solo shinies)</span></label>
+          <div class="field"><label>Emblema de shiny (skull)</label>
+            <input type="number" id="cap-shiny-skull" class="mini" min="0" max="999" value="55" />
+            <span class="muted small">valor de <code>skull</code> que marca a un shiny salvaje (PXG = 55). 0 = usar el detector por outfit</span></div>
         </section>
       </div>
     </section>
@@ -272,6 +289,9 @@
           <div class="field"><label>Ítem de revive</label>
             <input type="number" id="rev-item" class="mini" min="1" max="999999" value="2269" />
             <span class="muted small">id del ítem que se usa para revivir (2269)</span></div>
+          <div class="field"><label>Tiempo de combo (s)</label>
+            <input type="number" id="rev-combo" class="mini" min="0" max="60" step="0.1" value="0" />
+            <span class="muted small">segundos desde la primera skill antes de permitir el revive, para que las animaciones terminen y hagan daño. 0 = desactivado</span></div>
           <label class="switch"><input type="checkbox" id="rev-out" checked />
             <span>Si te quedas sin revives: logout, pausar y detener el bot</span></label>
           <div class="field"><label>Tecla de logout</label>
@@ -299,6 +319,13 @@
             <button id="m-undo" class="mini ghost" title="Quita el último waypoint">Deshacer</button>
             <button id="m-clear" class="mini ghost" title="Borra todos los waypoints">Limpiar</button>
             <button id="m-save" class="mini primary" title="Guarda la ruta actual y la aplica al bot">Guardar ruta</button>
+            <label class="inline" title="Tipo del próximo punto que dibujas: normal, o subir/bajar de piso (el punto se pone en la escalera del piso actual)">punto
+              <select id="m-wpkind" class="mini">
+                <option value="">normal</option>
+                <option value="up">subir ↑</option>
+                <option value="down">bajar ↓</option>
+              </select>
+            </label>
             <label class="inline" title="Repetir la ruta en bucle"><input type="checkbox" id="m-loop" checked> loop</label>
             <label class="inline" title="Ir y volver: al llegar al final, recorre la ruta al revés"><input type="checkbox" id="m-pp"> ping-pong</label>
           </div>
@@ -527,11 +554,63 @@
       </div>
     </section>
 
+    <!-- ============ WHATSAPP ============ -->
+    <section class="pane" data-pane="whatsapp">
+      <div class="grid">
+        <section class="card">
+          <h3>WhatsApp <span class="muted small" id="wa-state"></span></h3>
+          <div class="muted small">Avisos al móvil (solo salida). Elige el proveedor y rellena sus datos.</div>
+          <label class="switch"><input type="checkbox" id="wa-enabled" /><span>Activar avisos</span></label>
+          <div class="field"><label>Proveedor</label>
+            <select id="wa-provider" class="mini">
+              <option value="meta">Meta Cloud API (oficial)</option>
+              <option value="callmebot">CallMeBot</option>
+            </select></div>
+          <div class="field"><label>Tu WhatsApp (destino)</label>
+            <input type="text" id="wa-phone" placeholder="+34600123456" /></div>
+          <div class="field"><label>Access token (Meta)</label>
+            <input type="text" id="wa-token" placeholder="EAAG..." /></div>
+          <div class="field"><label>Phone number ID (Meta)</label>
+            <input type="text" id="wa-pnid" placeholder="1234567890" /></div>
+          <div class="field"><label>API version</label>
+            <input type="text" id="wa-apiver" class="mini" placeholder="v21.0" /></div>
+          <div class="field"><label>API key (CallMeBot)</label>
+            <input type="text" id="wa-apikey" placeholder="123456" /></div>
+          <div class="inline">
+            <button id="wa-test" class="mini primary">Enviar prueba</button>
+            <span class="muted small" id="wa-info">—</span>
+          </div>
+          <div class="muted small" style="margin-top:8px; line-height:1.6">
+            <b>Meta</b>: en developers.facebook.com → WhatsApp añade tu número; copia el <b>token</b> y el <b>phone number id</b>. Solo envía texto libre dentro de las <b>24 h</b> tras tu último mensaje al número.<br>
+            <b>CallMeBot</b>: envía <i>"I allow callmebot to send me messages"</i> al <b>+34 644 51 95 23</b> y recibirás la <b>API key</b>.
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Avisos</h3>
+          <label class="switch"><input type="checkbox" id="wa-ev-death" /><span>Muerte del personaje</span></label>
+          <label class="switch"><input type="checkbox" id="wa-ev-player" /><span>Otro jugador cerca</span></label>
+          <label class="switch"><input type="checkbox" id="wa-ev-shiny" /><span>Shiny encontrado</span></label>
+          <label class="switch"><input type="checkbox" id="wa-ev-capture" /><span>Captura de Pokémon</span></label>
+          <label class="switch"><input type="checkbox" id="wa-ev-revives_out" /><span>Sin revives</span></label>
+          <label class="switch"><input type="checkbox" id="wa-ev-disconnect" /><span>Desconexión</span></label>
+          <div class="field"><label>Rango jugador</label>
+            <input type="number" id="wa-range" class="mini" min="1" max="30" value="7" />
+            <span class="muted small">distancia (tiles) a la que avisa de otro jugador</span></div>
+        </section>
+      </div>
+    </section>
+
     <!-- ============ LOG ============ -->
     <section class="pane" data-pane="log">
       <div class="grid">
         <section class="card span2">
-          <h3>Registro <button id="btn-log-clear" class="mini ghost right" title="Activa o desactiva el desplazamiento automático al final">auto-scroll</button></h3>
+          <h3>Registro
+            <span class="right">
+              <button id="btn-log-wipe" class="mini ghost" title="Borra el contenido del registro (mejor con el bot parado)">vaciar</button>
+              <button id="btn-log-clear" class="mini ghost" title="Activa o desactiva el desplazamiento automático al final">auto-scroll</button>
+            </span>
+          </h3>
           <pre id="log" class="log"></pre>
         </section>
       </div>

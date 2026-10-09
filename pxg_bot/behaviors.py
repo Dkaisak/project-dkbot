@@ -22,6 +22,7 @@ class Blackboard:
     counters: dict = field(default_factory=dict)
     humanizer: object = None
     ignore: object = None
+    loot_items: object = None
 
     def ready(self, name: str, cooldown: float) -> bool:
         if self.humanizer is not None:
@@ -51,9 +52,15 @@ class Blackboard:
         looted = self.notes.setdefault("looted_ids", set())
         pending = self.notes.setdefault("corpses_pending", [])
         shiny_pos = self.notes.setdefault("shiny_pos", {})
+        shiny_ids = self.notes.setdefault("shiny_ids", set())
         for c in state.creatures:
             if getattr(c, "shiny", False) and c.kind == CreatureKind.MONSTER:
                 shiny_pos[(c.name, c.pos.x, c.pos.y)] = c.pos.z
+                uid = str(getattr(c, "uid", "") or "")
+                if uid:
+                    shiny_ids.add(uid)
+                self.notes["shiny_last"] = {"name": c.name, "id": uid,
+                                            "x": c.pos.x, "y": c.pos.y, "z": c.pos.z}
         for d in state.defeated:
             did = str(d.get("id", ""))
             if not did or did in seen:
@@ -63,18 +70,21 @@ class Blackboard:
                 continue
             dname = d.get("name", "?")
             dx, dy = int(d.get("x", 0)), int(d.get("y", 0))
-            was_shiny = any(
+            items = d.get("items") or []
+            # shiny por id (robusto) o por nombre+posicion (respaldo)
+            was_shiny = (did in shiny_ids) or any(
                 name == dname and abs(x - dx) <= 1 and abs(y - dy) <= 1
                 for (name, x, y) in shiny_pos
             )
             pending.append({
                 "id": did, "name": dname, "x": dx, "y": dy, "z": int(d.get("z", 0)),
+                "items": items,
             })
             self.count("kill")
             # meta de cada cuerpo: se captura (ball) tras lotear si es shiny o catch_all
             self.notes.setdefault("corpse_meta", {})[did] = {
                 "name": dname, "x": dx, "y": dy, "z": int(d.get("z", 0)),
-                "shiny": was_shiny,
+                "shiny": was_shiny, "items": items,
             }
 
 
@@ -286,19 +296,19 @@ class CaptureBehavior(Behavior):
         return {str(n).strip().lower() for n in raw if str(n).strip()}
 
     def _promote(self, bb: Blackboard) -> None:
-        # los cuerpos se lottean primero; al quedar looteados pasan a captura si
-        # pasan el filtro (nombre / shiny / catch_all).
+        # La captura es una FASE: corre cuando la fase de loot ya concluyo (loot
+        # tiene mayor prioridad y bloquea mientras le queden cuerpos). NO depende
+        # de que cada cuerpo este looteado: si el loot esta desactivado, o lo
+        # abandono, la captura procesa igualmente los cuerpos validos.
         meta = bb.notes.get("corpse_meta")
         if not meta:
             return
-        looted = bb.notes.get("looted_ids", set())
         pending = self._pending(bb)
         for cid in list(meta.keys()):
-            if cid in looted:
-                m = meta.pop(cid)
-                if self._valid(m):
-                    pending.append({"id": cid, "n": 0, **m})
-                    bb.count("ball")   # 1 por cuerpo (no por cada throw)
+            m = meta.pop(cid)
+            if self._valid(m):
+                pending.append({"id": cid, "n": 0, **m})
+                bb.count("ball")   # 1 por cuerpo (no por cada throw)
 
     def _valid(self, t: dict) -> bool:
         # filtro por nombre: `exclude` gana; si hay `names`, solo esos.
@@ -336,7 +346,16 @@ class CaptureBehavior(Behavior):
         # capturado (mensaje del servidor): el cuerpo se va. El recuento lo hace
         # el bot con el contador del agente (`Bot._count_captures`), para contar
         # tambien capturas que no vengan de la cola (p. ej. manuales o no-shiny).
-        if getattr(state, "captured", False):
+        captured = getattr(state, "captured", False)
+        # toggle `stop_on_capture`: al confirmarse la captura, dejar de lanzar
+        # balls a ese cuerpo. Usa el latch del contador del bot (`capture_stop_at`)
+        # porque el pulso de un tick se pierde si captura cede ante enemigos.
+        if self.cfg.get("stop_on_capture", False):
+            stop_at = bb.notes.get("capture_stop_at", 0.0)
+            if stop_at and (time.time() - stop_at) <= float(self.cfg.get("stop_on_capture_secs", 5.0)):
+                bb.notes.pop("capture_stop_at", None)
+                captured = True
+        if captured:
             pending.pop(0)
             return
         t = pending[0]
@@ -393,14 +412,11 @@ class CombatBehavior(Behavior):
                     bb.notes["lure_state"] = "resume"
                 return True
             if lstate == "hold":
-                # minimo comprometido al entrar en hold: `xmin` si se junto X, o
-                # el numero que hubiera si el hold vino forzado por el tope. Asi
-                # el hold del tope NO se cancela a si mismo en el tick siguiente.
                 wait = bool(bb.notes.get("lure_hold_wait"))
-                min_hold = int(bb.notes.get("lure_hold_min", xmin))
-                # el hold del tope ESPERA: solo cede si ya no queda ningun enemigo
-                # en pantalla. El normal cede si baja del minimo juntado.
-                if (len(vis) == 0) if wait else (len(vis) < min_hold):
+                # No se abandona mientras haya enemigos en pantalla: primero se
+                # REMATAN (el que quedo vivo o el nuevo que llego). Solo se vuelve
+                # a la ruta cuando no queda ninguno.
+                if len(vis) == 0:
                     bb.notes["lure_state"] = "resume"
                     return True
                 # pokestop solo cuando el summon llego al order Y todos a rango
@@ -670,6 +686,10 @@ class CombatBehavior(Behavior):
         # tiene stun, la ventana en la que el enemigo queda aturdido.
         bb.notes["skill_sent"] = key
         bb.count("skill")
+        # tiempo de combo: la PRIMERA skill del ciclo arranca el reloj; el revive
+        # esperara a que pasen `combo_time` s para no cortar su animacion.
+        if not bb.notes.get("combo_start"):
+            bb.notes["combo_start"] = time.time()
         for m in (state.moves or []):
             if str(m.get("key")) == str(key):
                 if m.get("aoe"):
@@ -806,6 +826,28 @@ class CombatBehavior(Behavior):
             bb.notes.pop(k, None)
         return True
 
+    def _chase(self, state: GameState, bb: Blackboard, inp) -> bool:
+        """Camina hacia el enemigo visible mas cercano que este fuera de rango
+        (para rematar al que quedo vivo o al nuevo que llego). True si se movio
+        o ya esta caminando hacia el."""
+        vis = self._engaging_enemies(state)
+        if not vis:
+            return False
+        arange = int(self.cfg.get("attack_range", 3))
+        ref = self._ref_pos(state) or state.player.pos
+        out = [c for c in vis if ref.distance(c.pos) > arange]
+        if not out:
+            return False
+        if state.is_walking:
+            return True
+        tgt = min(out, key=lambda c: state.player.pos.distance(c.pos))
+        direction = state.player.pos.direction_to(tgt.pos)
+        if direction >= 0 and bb.ready("approach", float(self.cfg.get("approach_cooldown", 0.15))):
+            inp.move(direction)
+            bb.mark("approach")
+            return True
+        return False
+
     def _lure_hold(self, state: GameState, bb: Blackboard, inp) -> None:
         # detener la navegacion de la ruta (una vez)
         if not bb.notes.get("lure_stopped"):
@@ -813,10 +855,15 @@ class CombatBehavior(Behavior):
             bb.notes["lure_stopped"] = True
         # situar el ownsummon (una vez); el pokestop espera a que llegue
         self._lure_summon(state, bb, inp)
+        # si los enemigos estan fuera de rango, acercarse para rematarlos
+        if not self._attack_gate_ok(state):
+            self._chase(state, bb, inp)
 
     def _lure_fight(self, state: GameState, bb: Blackboard, inp) -> None:
         if not self._attack_gate_ok(state):
-            # gate caido (se separaron): si persiste, volver a hold a reagrupar
+            # gate caido (se separaron o hay uno nuevo lejos): acercarse a rematar
+            if self._chase(state, bb, inp):
+                return
             now = time.time()
             lost = bb.notes.get("lure_fight_lost")
             if not lost:
@@ -1060,6 +1107,37 @@ class LootBehavior(Behavior):
         bb.notes["loot_progress_d"] = None
         bb.notes["loot_prog_sig"] = None
 
+    def _whitelist(self) -> set:
+        """Items (nombre o id) que SIEMPRE se lootean, aunque el loot este off."""
+        raw = self.cfg.get("whitelist")
+        if isinstance(raw, str):
+            raw = raw.replace(";", ",").split(",")
+        if not isinstance(raw, (list, tuple)):
+            return set()
+        return {str(x).strip().lower() for x in raw if str(x).strip()}
+
+    def _whitelist_ids(self, bb: Blackboard) -> set:
+        """Whitelist (nombres/ids) + ids traducidos de los nombres via la tabla
+        aprendida de los mensajes de botin (`bb.loot_items`)."""
+        names = self._whitelist()
+        ids = set(names)
+        li = getattr(bb, "loot_items", None)
+        if li is not None:
+            for n in names:
+                iid = li.id_for(n)
+                if iid is not None:
+                    ids.add(str(iid))
+        return ids
+
+    @staticmethod
+    def _has_whitelisted(corpse: dict, idset: set) -> bool:
+        for it in (corpse.get("items") or []):
+            if str(it.get("id", "")).strip() in idset:
+                return True
+            if str(it.get("name", "")).strip().lower() in idset:
+                return True
+        return False
+
     def _coverage(self, tx: int, ty: int, pending: list) -> int:
         return sum(1 for c in pending if max(abs(tx - c["x"]), abs(ty - c["y"])) <= 1)
 
@@ -1168,7 +1246,13 @@ class LootBehavior(Behavior):
         return nearest(state, is_enemy, max_range=rng) is not None
 
     def evaluate(self, state: GameState, bb: Blackboard) -> bool:
-        if bb.paused or not self.cfg.get("enabled", True):
+        if bb.paused:
+            return False
+        enabled = bool(self.cfg.get("enabled", True))
+        wl = self._whitelist()
+        # loot desactivado sin whitelist -> nada. Con whitelist -> solo los cuerpos
+        # que contienen un item de la lista (aunque el loot este off).
+        if not enabled and not wl:
             return False
         now = time.time()
         last_eval = bb.notes.get("loot_eval_at", 0.0)
@@ -1190,6 +1274,9 @@ class LootBehavior(Behavior):
             return False
         self._finalize(state, bb)
         pending = self._pending(bb)
+        if not enabled:
+            idset = self._whitelist_ids(bb)
+            pending[:] = [c for c in pending if self._has_whitelisted(c, idset)]
         if not pending:
             self._reset_phase(bb)
             bb.notes.pop("loot_nav_fp", None)
@@ -1376,6 +1463,24 @@ class ReviveBehavior(Behavior):
                  and by_key[k]["pct"] >= ready_pct]
         return (len(ready) < len(combo)), (len(ready) == 0)
 
+    def _combo_time(self) -> float:
+        try:
+            return float(self.cfg.get("combo_time", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _combo_waiting(self, bb: Blackboard) -> bool:
+        """True mientras no se haya cumplido el tiempo de combo (desde la primera
+        skill del ciclo): no revivir todavia, para no cortar la animacion de las
+        skills (si se corta, esa skill no llega a hacer dano)."""
+        ct = self._combo_time()
+        if ct <= 0:
+            return False
+        start = bb.notes.get("combo_start")
+        if not start:
+            return False
+        return (time.time() - start) < ct
+
     def _stun_active(self, state: GameState, bb: Blackboard) -> bool:
         # proxy del stun del enemigo: se lanzo una skill de stun hace < stun_secs
         if not self.cfg.get("on_stun", True):
@@ -1406,6 +1511,10 @@ class ReviveBehavior(Behavior):
         stun = self._stun_active(state, bb)
         rec = bb.notes.get("revive_rec")
         now = time.time()
+        # tiempo de combo: si el combo ya no tiene skills en cooldown, el ciclo
+        # termino -> reiniciar el reloj (la proxima primera skill lo arranca).
+        if not used:
+            bb.notes.pop("combo_start", None)
         # guarda de recuperacion: tras un revive el estado del juego tarda en
         # reflejarlo; no iniciar otra secuencia hasta verlo recuperado (vivo y
         # combo sin cooldowns). Evita el doble revive por lag.
@@ -1433,6 +1542,11 @@ class ReviveBehavior(Behavior):
             # URGENTE: pokemon debilitado -> revivir ya, lo mas rapido posible
             bb.notes["revive_fast"] = True
             return True
+
+        # tiempo de combo: no revivir hasta que pasen `combo_time` s desde la
+        # primera skill del ciclo (deja que las animaciones terminen y hagan dano).
+        if self._combo_waiting(bb):
+            return False
 
         in_range = self._alive_in_range(state)
         min_done = now - bb.notes.get("revive_done", 0.0)
@@ -1524,6 +1638,8 @@ class ReviveBehavior(Behavior):
             bb.notes["revive_done"] = now
             bb.notes.pop("revive_rec", None)
             bb.notes.pop("revive_fast", None)
+            # el ciclo del combo termina: reiniciar el reloj del tiempo de combo
+            bb.notes.pop("combo_start", None)
             # exigir recuperacion (estado) antes de permitir otro revive
             bb.notes["revive_ready"] = False
             bb.count("revive")
@@ -2052,6 +2168,61 @@ class RouteBehavior(Behavior):
                     return Vec3(gx + ox, gy + oy, final.z)
         return Vec3(gx, gy, final.z)
 
+    def _advance(self, bb: Blackboard, now: float, pos) -> None:
+        self.route.advance()
+        bb.notes.pop("route_key", None)
+        bb.notes.pop("route_wp", None)
+        bb.notes.pop("route_best", None)
+        bb.notes.pop("route_seg", None)
+        bb.notes.pop("route_tr_key", None)
+        bb.notes.pop("route_tr_at", None)
+        bb.notes.pop("route_tr_step_at", None)
+        bb.notes.pop("route_tr_src_z", None)
+        bb.notes["route_sent_at"] = 0.0
+        bb.notes["route_pos"] = pos
+        bb.notes["route_since"] = now
+
+    def _do_transition(self, state: GameState, bb: Blackboard, inp, waypoint: Vec3,
+                       now: float) -> None:
+        """Waypoint marcado 'subir'/'bajar': la casilla es la escalera del piso
+        actual. Navega al tile exacto y espera a que el cliente cambie la z al
+        pisarlo; solo entonces avanza (no corta el cambio de piso)."""
+        p = state.player.pos
+        key = (waypoint.x, waypoint.y, waypoint.z)
+        if bb.notes.get("route_tr_key") != key:
+            bb.notes["route_tr_key"] = key
+            bb.notes["route_tr_at"] = now
+            bb.notes["route_tr_tries"] = 0
+            bb.notes["route_tr_src_z"] = p.z
+            bb.notes["route_key"] = None
+            bb.notes.pop("route_tr_step_at", None)
+        src_z = int(bb.notes.get("route_tr_src_z", waypoint.z))
+        # la z cambio -> ya estamos en el otro piso
+        if p.z != src_z:
+            self._advance(bb, now, (p.x, p.y))
+            return
+        goal = Vec3(waypoint.x, waypoint.y, src_z)
+        if p.x == waypoint.x and p.y == waypoint.y:
+            # encima de la escalera: reenviar el paso por si el cliente no lo
+            # disparo (pisarla es lo que cambia de piso)
+            if now - bb.notes.get("route_tr_step_at", 0.0) > 0.6:
+                inp.walk_to(goal)
+                bb.notes["route_tr_step_at"] = now
+        elif bb.notes.get("route_key") != key or (
+            not state.is_walking
+            and now - bb.notes.get("route_sent_at", 0.0) > float(self.cfg.get("resend_secs", 2.5))
+        ):
+            inp.walk_to(goal)
+            bb.notes["route_key"] = key
+            bb.notes["route_sent_at"] = now
+        # no cambia la z: reintentar acercandose y, si se agota, saltar
+        if now - bb.notes.get("route_tr_at", now) > float(self.cfg.get("transition_timeout_secs", 12.0)):
+            bb.notes["route_tr_tries"] = int(bb.notes.get("route_tr_tries", 0)) + 1
+            bb.notes["route_tr_at"] = now
+            bb.notes["route_key"] = None
+            if bb.notes["route_tr_tries"] >= 3:
+                self._advance(bb, now, (p.x, p.y))
+
     def act(self, state: GameState, bb: Blackboard, inp) -> None:
         if bb.notes.pop("route_recall_call", False):
             self._pending_call = True
@@ -2063,14 +2234,21 @@ class RouteBehavior(Behavior):
         if now < self._idle_until:
             return
         waypoint = self.route.current
-        arrive = int(self.cfg.get("arrive_distance", 1))
+        action = self.route.current_action
         pos = (state.player.pos.x, state.player.pos.y)
         pz = state.player.pos.z
+        # transicion de piso explicita (subir/bajar) en este punto
+        if action in ("up", "down"):
+            self._do_transition(state, bb, inp, waypoint, now)
+            return
+        arrive = int(self.cfg.get("arrive_distance", 1))
         cross_z = waypoint.z != pz
-        # multi-piso: si el waypoint esta en otro piso, "llegar" = estar en su (x,y)
+        # "llegar" = estar en el piso del waypoint y a <= arrive en (x,y). Para un
+        # waypoint de otro piso sin marcar, hay que cambiar de piso de verdad (la
+        # z debe coincidir); no se avanza solo por cercania en (x,y).
         near_xy = max(abs(state.player.pos.x - waypoint.x),
                       abs(state.player.pos.y - waypoint.y)) <= arrive
-        if state.player.pos.distance(waypoint) <= arrive or (cross_z and near_xy):
+        if pz == waypoint.z and near_xy:
             # al llegar al inicio del recorrido (waypoint 0) DESPUES del primer
             # loop, esperar 25-60 s (no en el arranque del bot)
             if (self.cfg.get("start_idle_enabled", True)
@@ -2090,13 +2268,7 @@ class RouteBehavior(Behavior):
             if self.route.index == 0:
                 self._looped = True
             self._idled_start = False
-            self.route.advance()
-            bb.notes.pop("route_key", None)
-            bb.notes.pop("route_wp", None)
-            bb.notes.pop("route_best", None)
-            bb.notes["route_sent_at"] = 0.0
-            bb.notes["route_pos"] = pos
-            bb.notes["route_since"] = now
+            self._advance(bb, now, pos)
             return
         nav_wp = waypoint if not cross_z else Vec3(waypoint.x, waypoint.y, pz)
         dist = state.player.pos.distance(nav_wp)
@@ -2114,24 +2286,14 @@ class RouteBehavior(Behavior):
             bb.notes["route_best_at"] = now
         # atasco por progreso: si no se acerca al waypoint en N s, saltarlo
         if now - bb.notes.get("route_best_at", now) > float(self.cfg.get("progress_stuck_secs", 6.0)):
-            self.route.advance()
-            bb.notes.pop("route_key", None)
-            bb.notes.pop("route_wp", None)
-            bb.notes.pop("route_best", None)
-            bb.notes["route_sent_at"] = 0.0
-            bb.notes["route_since"] = now
+            self._advance(bb, now, pos)
             return
         # atasco por posicion: no camina y la posicion no cambia
         if bb.notes.get("route_pos") != pos:
             bb.notes["route_pos"] = pos
             bb.notes["route_since"] = now
         if not state.is_walking and now - bb.notes.get("route_since", now) > float(self.cfg.get("stuck_secs", 2.0)):
-            self.route.advance()
-            bb.notes.pop("route_key", None)
-            bb.notes.pop("route_wp", None)
-            bb.notes.pop("route_best", None)
-            bb.notes["route_sent_at"] = 0.0
-            bb.notes["route_since"] = now
+            self._advance(bb, now, pos)
             return
         # objetivo segmentado: se fija un punto a <= max_nav_dist (rango que el
         # cliente sabe pathfindear) y NO se recalcula cada tile, para no

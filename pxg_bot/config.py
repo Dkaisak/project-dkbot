@@ -8,6 +8,7 @@ from typing import Optional
 
 from .llm.config import DEFAULT_LLM
 from .notify import DEFAULT_TELEGRAM
+from .whatsapp import DEFAULT_WHATSAPP
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -62,6 +63,7 @@ DEFAULT_HUMANIZER = {
 DEFAULT_SETTINGS = {
     "tick_seconds": 0.1,
     "state_source": "lua",
+    "log_every": 1,          # imprime la linea de tick cada N ticks (1 = cada tick)
     "background_input": False,
     "input_backend": "lua",
     "window_name": None,
@@ -80,6 +82,12 @@ DEFAULT_SETTINGS = {
     "humanizer": DEFAULT_HUMANIZER,
 }
 
+# Deteccion de shiny: el emblema (skull) que PXG dibuja en los shinys salvajes
+# es siempre el mismo (55). 0 = usar el heuristico de outfit (pxg_shiny.json).
+DEFAULT_SHINY = {
+    "skull": 55,
+}
+
 DEFAULT_LUA = _lua_paths(DEFAULT_MYDATA)
 
 DEFAULT_UI = {
@@ -87,6 +95,7 @@ DEFAULT_UI = {
     "host": "127.0.0.1",
     "auto_open": True,
     "log_file": os.path.join(DEFAULT_MYDATA, "pxg_bot.log"),
+    "log_max_mb": 20,
     "mode": "app",
     "debug": False,
     "icon": "tools/icon.ico",
@@ -139,6 +148,7 @@ DEFAULT_BEHAVIORS = {
         "names": [],
         "exclude": [],
         "catch_all": False,
+        "stop_on_capture": False,   # dejar de lanzar balls al confirmarse la captura
         "shiny_only": True,
         "hp_threshold": 30,
         "range": 4,
@@ -202,6 +212,7 @@ DEFAULT_BEHAVIORS = {
     "loot": {
         "enabled": True,
         "reach": 0,          # 0 = sin limite (se camina a los cuerpos lejanos)
+        "whitelist": [],     # items (id/nombre) que se lootean aunque el loot este off
         "enemy_range": 3,
         "collect_interval": 0.5,
         "collect_grace": 0.7,
@@ -216,6 +227,7 @@ DEFAULT_BEHAVIORS = {
         "item": 2269,
         "disconnect_when_out": True,
         "logout_key": "F12",
+        "combo_time": 0.0,          # s desde la 1a skill antes de permitir el revive (0 = off)
         "min_interval_secs": 8.0,
         "on_stun": True,
         "click_delay": 0.15,
@@ -254,6 +266,7 @@ DEFAULT_BEHAVIORS = {
         "progress_stuck_secs": 6.0,
         "max_nav_dist": 8,
         "start_idle_seconds": [25, 60],
+        "transition_timeout_secs": 12.0,
         "static_map": None,
     },
     "explore": {
@@ -313,8 +326,10 @@ def load_config(path: str) -> dict:
     raw["lua"] = deep_merge(DEFAULT_LUA, raw.get("lua", {}))
     raw["ui"] = deep_merge(DEFAULT_UI, raw.get("ui", {}))
     raw["telemetry"] = deep_merge(DEFAULT_TELEMETRY, raw.get("telemetry", {}))
+    raw["shiny"] = deep_merge(DEFAULT_SHINY, raw.get("shiny", {}))
     raw["llm"] = deep_merge(DEFAULT_LLM, raw.get("llm", {}))
     raw["telegram"] = deep_merge(DEFAULT_TELEGRAM, raw.get("telegram", {}))
+    raw["whatsapp"] = deep_merge(DEFAULT_WHATSAPP, raw.get("whatsapp", {}))
     raw.setdefault("offsets", {})
     return raw
 

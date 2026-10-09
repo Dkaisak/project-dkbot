@@ -69,7 +69,8 @@ def _reconstruct(came_from, current, z: int) -> list[Vec3]:
 
 
 class Route:
-    def __init__(self, waypoints: list[Vec3], loop: bool = True, ping_pong: bool = False):
+    def __init__(self, waypoints: list[Vec3], loop: bool = True, ping_pong: bool = False,
+                 actions: Optional[list] = None):
         if not waypoints:
             raise ValueError("la ruta no puede estar vacía")
         self.waypoints = waypoints
@@ -77,15 +78,38 @@ class Route:
         self.ping_pong = ping_pong
         self.index = 0
         self.forward = True
+        # Accion opcional por waypoint: "up"/"down" = en este punto hay que
+        # subir/bajar de piso (la casilla es la escalera del piso actual).
+        self.actions: list = list(actions) if actions else [None] * len(waypoints)
+        if len(self.actions) < len(self.waypoints):
+            self.actions += [None] * (len(self.waypoints) - len(self.actions))
+
+    @staticmethod
+    def _parse_action(value) -> Optional[str]:
+        raw = str(value).strip().lower() if value is not None else ""
+        return {"up": "up", "subir": "up", "+": "up",
+                "down": "down", "bajar": "down", "-": "down"}.get(raw)
 
     @classmethod
     def from_config(cls, cfg: list[list[int]], loop: bool = True, ping_pong: bool = False) -> "Route":
         waypoints = [Vec3(int(p[0]), int(p[1]), int(p[2]) if len(p) > 2 else 0) for p in cfg]
-        return cls(waypoints, loop=loop, ping_pong=ping_pong)
+        actions = [cls._parse_action(p[3]) if len(p) > 3 else None for p in cfg]
+        return cls(waypoints, loop=loop, ping_pong=ping_pong, actions=actions)
 
     @property
     def current(self) -> Vec3:
         return self.waypoints[self.index]
+
+    @property
+    def current_action(self) -> Optional[str]:
+        if 0 <= self.index < len(self.actions):
+            return self.actions[self.index]
+        return None
+
+    def action_at(self, index: int) -> Optional[str]:
+        if 0 <= index < len(self.actions):
+            return self.actions[index]
+        return None
 
     def is_finished(self) -> bool:
         return not self.loop and self.index >= len(self.waypoints) - 1

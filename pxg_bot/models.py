@@ -155,6 +155,7 @@ class GameState:
     capture_name: str = ""
     loots: int = 0
     loot_msg: str = ""
+    loot_ids: list = field(default_factory=list)
     active_pokemon_name: str = ""
     skill_order: list = field(default_factory=list)
     lure_order: list = field(default_factory=list)

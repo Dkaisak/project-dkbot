@@ -47,14 +47,35 @@ def _read_json(path: str) -> dict:
 
 
 def _tail(path: str, n: int) -> list[str]:
+    """Ultimas `n` lineas leyendo SOLO el final del fichero.
+
+    Antes se hacia `readlines()` (cargaba todo en memoria): con un log de cientos
+    de MB la pestana Registro se arrastraba. Ahora se lee hacia atras por bloques
+    hasta juntar `n` lineas."""
     if not path:
         return []
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
-            lines = handle.readlines()
-        return [line.rstrip("\n") for line in lines[-max(1, n):]]
+        n = max(1, int(n))
+    except (TypeError, ValueError):
+        n = 1
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            chunk = 64 * 1024
+            data = b""
+            pos = size
+            while pos > 0:
+                step = min(chunk, pos)
+                pos -= step
+                handle.seek(pos)
+                data = handle.read(step) + data
+                if data.count(b"\n") > n:
+                    break
     except OSError:
         return []
+    text = data.decode("utf-8", "ignore")
+    return text.splitlines()[-n:]
 
 
 def _size(path: str):
@@ -277,6 +298,64 @@ class Dashboard:
             token, chat, "✅ Prueba de dkbot: los avisos por Telegram funcionan.", parse)
         return {"ok": ok, "error": err}
 
+    # --- whatsapp (CallMeBot, solo salida) ---
+    def whatsapp(self) -> dict:
+        cfg = load_config(self.cfg_path)
+        wa = cfg.get("whatsapp", {}) or {}
+        status = _read_json(self.status_file).get("whatsapp") or {}
+        return {"config": wa, "status": status}
+
+    def _save_whatsapp(self, patch: dict) -> bool:
+        """Escribe la seccion `whatsapp` en config.json conservando el resto."""
+        try:
+            with open(self.cfg_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        from .config import deep_merge
+        from .whatsapp import DEFAULT_WHATSAPP
+
+        current = data.get("whatsapp")
+        if not isinstance(current, dict):
+            current = {}
+        data["whatsapp"] = deep_merge(deep_merge(DEFAULT_WHATSAPP, current), patch or {})
+        try:
+            tmp = self.cfg_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, ensure_ascii=False)
+            os.replace(tmp, self.cfg_path)
+            return True
+        except OSError:
+            return False
+
+    def patch_whatsapp(self, body: dict) -> dict:
+        """Guarda la config y la aplica en caliente (canal de control)."""
+        with self.lock:
+            if not self._save_whatsapp(body or {}):
+                return {"ok": False, "error": "no se pudo guardar config.json"}
+            self._apply_cfg(load_config(self.cfg_path))
+            wa = self.cfg.get("whatsapp", {}) or {}
+            current = control_io.read_control(self.control_file)
+            current["whatsapp"] = wa
+            current["updated"] = time.time()
+            control_io.write_control(self.control_file, current)
+            return {"ok": True, "config": wa}
+
+    def test_whatsapp(self, body: dict) -> dict:
+        """Envia un WhatsApp de prueba (usa los valores del body o de config)."""
+        from .whatsapp import send_whatsapp
+
+        body = body or {}
+        cfg = dict(load_config(self.cfg_path).get("whatsapp", {}) or {})
+        for k in ("provider", "phone", "token", "phone_number_id", "api_version", "apikey"):
+            if body.get(k):
+                cfg[k] = body[k]
+        ok, err = send_whatsapp(
+            cfg, "✅ Prueba de dkbot: los avisos por WhatsApp funcionan.")
+        return {"ok": ok, "error": err}
+
     # --- comandos entrantes por Telegram (long-poll) ---
     def start_telegram_commands(self) -> None:
         """Arranca el listener de comandos (una sola vez)."""
@@ -365,12 +444,63 @@ class Dashboard:
         except Exception as exc:
             return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
 
+    def _rotate_log(self) -> None:
+        """Rota el log si supera `ui.log_max_mb` (mueve el actual a `.1`)."""
+        if not self.log_file:
+            return
+        try:
+            max_mb = float((self.cfg.get("ui", {}) or {}).get("log_max_mb", 20) or 0)
+        except (TypeError, ValueError):
+            max_mb = 20
+        if max_mb <= 0:
+            return
+        try:
+            if os.path.getsize(self.log_file) < max_mb * 1024 * 1024:
+                return
+        except OSError:
+            return
+        backup = self.log_file + ".1"
+        try:
+            try:
+                os.remove(backup)
+            except OSError:
+                pass
+            os.replace(self.log_file, backup)
+        except OSError:
+            pass
+
+    def clear_log(self) -> dict:
+        """Vacia el registro (mejor con el bot parado)."""
+        with self.lock:
+            if self._log_handle is not None:
+                try:
+                    self._log_handle.close()
+                except OSError:
+                    pass
+                self._log_handle = None
+            try:
+                if self.log_file:
+                    os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+                    with open(self.log_file, "w", encoding="utf-8"):
+                        pass
+            except OSError as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True}
+
     def start_bot(self) -> dict:
         with self.lock:
             if self.bot_pid():
                 return {"ok": False, "error": "el bot ya esta corriendo"}
-            if self._log_handle is None and self.log_file:
+            if self.log_file:
+                # cerrar el handle previo, rotar si toca, y reabrir en append
+                if self._log_handle is not None:
+                    try:
+                        self._log_handle.close()
+                    except OSError:
+                        pass
+                    self._log_handle = None
                 os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+                self._rotate_log()
                 self._log_handle = open(self.log_file, "ab", buffering=0)
             if paths.IS_FROZEN:
                 cmd = [sys.executable, "--config", self.cfg_path, "run", "--verbose"]
@@ -472,6 +602,8 @@ class Dashboard:
             "behavior": playing or ("break" if status.get("chosen") == "break" else "idle"),
             "humanizer": status.get("humanizer", ""),
             "counters": status.get("counters", {}),
+            "shiny_last": status.get("shiny_last"),
+            "capture_pending": status.get("capture_pending", []),
             "uptime": status.get("uptime", 0),
             "loop": status.get("loop", 0),
             "name": state.get("name", ""),
@@ -506,6 +638,14 @@ class Dashboard:
         tel["trace_bytes"] = _size(os.path.join(base, "pxg_trace.jsonl")) if base else None
         tel["deaths_bytes"] = _size(os.path.join(base, "pxg_deaths.jsonl")) if base else None
         return tel
+
+    def loot_items(self) -> dict:
+        """Tabla aprendida nombre->id de los items (de los mensajes de botin)."""
+        base = os.path.dirname(self.state_file) if self.state_file else ""
+        path = os.path.join(base, "pxg_loot_items.json") if base else ""
+        data = _read_json(path)
+        items = data.get("items") if isinstance(data, dict) else None
+        return {"items": items or {}}
 
     def deaths(self, tail: int = 10) -> dict:
         status = _read_json(self.status_file)
@@ -961,6 +1101,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.app.processes())
         elif path == "/api/telegram":
             self._json(self.app.telegram())
+        elif path == "/api/whatsapp":
+            self._json(self.app.whatsapp())
         elif path == "/api/config":
             self._json(self.app.config())
         elif path == "/api/log":
@@ -1013,6 +1155,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 n = 10
             self._json(self.app.deaths(n))
+        elif path == "/api/loot_items":
+            self._json(self.app.loot_items())
         else:
             self._static(path)
 
@@ -1046,6 +1190,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.app.patch_telegram(body))
         elif path == "/api/telegram/test":
             self._json(self.app.test_telegram(body))
+        elif path == "/api/whatsapp":
+            self._json(self.app.patch_whatsapp(body))
+        elif path == "/api/whatsapp/test":
+            self._json(self.app.test_whatsapp(body))
         elif path == "/api/attach":
             self._json(self.app.attach_client(body.get("process_name")))
         elif path == "/api/bot":
@@ -1056,6 +1204,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.app.stop_bot())
             else:
                 self._json({"ok": False, "error": "accion invalida"}, 400)
+        elif path == "/api/log/clear":
+            self._json(self.app.clear_log())
         else:
             self._json({"ok": False, "error": "not found"}, 404)
 

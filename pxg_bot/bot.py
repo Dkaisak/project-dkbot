@@ -10,7 +10,7 @@ from . import control as control_io
 from .behaviors import Blackboard, build_behaviors
 from .humanizer import Humanizer
 from .models import CreatureKind, GameState, Player, Vec3
-from .notify import Notifier
+from .notify import Notifiers
 from .pathfinding import Route
 
 
@@ -30,11 +30,16 @@ class Bot:
         self.control_file = control_io.control_path(cfg)
         self.status_file = control_io.status_path(cfg)
         self._pid_file = self._derive_pid_file()
+        self._seen_file = self._derive_seen_file()
+        self._load_seen()
         self.world = self._build_world(cfg)
         self._densify_route()
         self.llm = self._build_llm(cfg)
         self.telemetry = self._build_telemetry(cfg)
         self.notifier = self._build_notifier(cfg)
+        self.loot_items = self._build_loot_items(cfg)
+        self.bb.loot_items = self.loot_items
+        self._last_loot_save = 0.0
         self.behaviors = build_behaviors(cfg, route, self.world, llm=self.llm)
         self._revive_behavior = next((b for b in self.behaviors if b.name == "revive"), None)
         self._orig_enabled = {b.name: b.cfg.get("enabled", True) for b in self.behaviors}
@@ -60,6 +65,46 @@ class Bot:
             return ""
         return os.path.join(os.path.dirname(base), "pxg_bot.pid")
 
+    def _derive_seen_file(self) -> str:
+        base = self.status_file or self.control_file or ""
+        if not base:
+            return ""
+        return os.path.join(os.path.dirname(base), "pxg_bot_seen.json")
+
+    def _load_seen(self) -> None:
+        """Carga los contadores "ya avisados" de la sesion anterior.
+
+        Asi, al parar y volver a arrancar el bot, NO se reenvian capturas ya
+        notificadas (el contador `captures` del agente persiste entre reinicios
+        del bot)."""
+        self._seen_loaded = False
+        if not self._seen_file:
+            return
+        try:
+            with open(self._seen_file, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return
+        try:
+            seen = int(data.get("captures", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if seen > 0:
+            self.bb.notes["captures_seen"] = seen
+            self._seen_loaded = True
+
+    def _save_seen(self) -> None:
+        if not self._seen_file:
+            return
+        try:
+            tmp = self._seen_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump({"captures": int(self.bb.notes.get("captures_seen", 0) or 0)},
+                          handle)
+            os.replace(tmp, self._seen_file)
+        except OSError:
+            pass
+
     def _build_llm(self, cfg: dict):
         llm_cfg = cfg.get("llm", {}) or {}
         if not llm_cfg.get("enabled", False):
@@ -74,7 +119,15 @@ class Bot:
         return Telemetry(cfg)
 
     def _build_notifier(self, cfg: dict):
-        return Notifier(cfg)
+        return Notifiers(cfg)
+
+    def _build_loot_items(self, cfg: dict):
+        base = os.path.dirname(self.status_file) if self.status_file else ""
+        if not base:
+            return None
+        from .loot_items import LootItems
+
+        return LootItems(os.path.join(base, "pxg_loot_items.json"))
 
     def _build_world(self, cfg: dict):
         base = self.status_file or self.control_file or ""
@@ -125,6 +178,8 @@ class Bot:
         self.bb.notes["revive_urgent"] = self._revive_is_urgent(state)
         # capturas confirmadas (contador del agente)
         self._count_captures(state)
+        # aprender nombre->id de los mensajes de botin (whitelist de loot)
+        self._learn_loot(state)
         # personaje actual: la reconexion siempre vuelve al mismo personaje
         if getattr(state, "connected", False) and state.player.name:
             self.bb.notes["last_character"] = state.player.name
@@ -186,6 +241,13 @@ class Bot:
             for behavior in self.behaviors:
                 if behavior.name == "capture":
                     behavior.cfg.update(capture)
+        # emblema de shiny (skull): se aplica en caliente al source
+        shiny = data.get("shiny")
+        if isinstance(shiny, dict) and "skull" in shiny:
+            try:
+                setattr(self.source, "shiny_skull", int(shiny.get("skull") or 0))
+            except (TypeError, ValueError):
+                pass
         combat = data.get("combat")
         if isinstance(combat, dict) and combat:
             for behavior in self.behaviors:
@@ -217,7 +279,10 @@ class Bot:
             self.bb.humanizer = self.humanizer
         telegram = data.get("telegram")
         if isinstance(telegram, dict) and telegram:
-            self.notifier.set_config(telegram)
+            self.notifier.set_config("telegram", telegram)
+        whatsapp = data.get("whatsapp")
+        if isinstance(whatsapp, dict) and whatsapp:
+            self.notifier.set_config("whatsapp", whatsapp)
         route = data.get("route")
         if isinstance(route, dict) and route.get("waypoints") is not None:
             self._apply_route(route)
@@ -239,7 +304,12 @@ class Bot:
         wps = route.get("waypoints") or []
         pokemon = str(route.get("pokemon", "") or "")
         pslot = route.get("pokemon_slot")
-        fp = (tuple(tuple(int(v) for v in w) for w in wps),
+
+        def _wp_key(w):
+            action = str(w[3]).lower() if len(w) > 3 and w[3] else ""
+            return (int(w[0]), int(w[1]), int(w[2]) if len(w) > 2 else 0, action)
+
+        fp = (tuple(_wp_key(w) for w in wps),
               bool(route.get("loop", True)), bool(route.get("ping_pong", False)),
               bool(route.get("enabled", True)), pokemon, pslot)
         if fp == self._route_fp:
@@ -283,14 +353,29 @@ class Bot:
         cur = int(getattr(state, "captures", -1))
         name = str(getattr(state, "capture_name", "") or "")
         if cur >= 0:
+            if not self._seen_loaded:
+                # primer arranque (sin historial persistido): fijar la base con el
+                # contador actual SIN reavisar, para no reenviar el historial.
+                self.bb.notes["captures_seen"] = cur
+                self._seen_loaded = True
+                self._save_seen()
+                return
             seen = int(self.bb.notes.get("captures_seen", 0))
             if cur < seen:
-                seen = 0  # el agente se reinicio (contador a 0)
+                # el agente se reinicio (contador a 0): resincronizar SIN reavisar
+                # (no reenviar capturas que ya se notificaron).
+                self.bb.notes["captures_seen"] = cur
+                self._save_seen()
+                return
             if cur > seen:
                 n = cur - seen
                 self.bb.count("captured", n)
                 self.notifier.capture(name, n)
-            self.bb.notes["captures_seen"] = cur
+                self.bb.notes["captures_seen"] = cur
+                # señal para el toggle de captura: parar de lanzar balls al
+                # confirmarse la captura (latch, por si captura cede el turno)
+                self.bb.notes["capture_stop_at"] = time.time()
+                self._save_seen()
             return
         if not getattr(state, "captured", False):
             return
@@ -300,6 +385,20 @@ class Bot:
         self.bb.notes["captured_ts"] = ts
         self.bb.count("captured")
         self.notifier.capture(name, 1)
+        self.bb.notes["capture_stop_at"] = time.time()
+
+    def _learn_loot(self, state) -> None:
+        """Aprende nombre->id de los mensajes de botin (ver pxg_bot/loot_items.py)."""
+        if self.loot_items is None:
+            return
+        msg = str(getattr(state, "loot_msg", "") or "")
+        ids = list(getattr(state, "loot_ids", []) or [])
+        if not msg or not ids:
+            return
+        self.loot_items.observe(msg, ids)
+        if time.time() - self._last_loot_save > 10:
+            self.loot_items.save()
+            self._last_loot_save = time.time()
 
     def _check_revives_out(self, state) -> None:
         """Si se acaban los revives -> logout y detener el bot.
@@ -341,16 +440,27 @@ class Bot:
         if not rcfg.get("densify", True):
             return
         wps = route.waypoints
+        actions = list(getattr(route, "actions", []) or [])
+        if len(actions) < len(wps):
+            actions += [None] * (len(wps) - len(actions))
         n = len(wps)
         if n < 2:
             return
         dense: list[Vec3] = []
+        dense_actions: list = []
         for i in range(n):
             a = wps[i]
             b = wps[(i + 1) % n] if route.loop else (wps[i + 1] if i + 1 < n else None)
             if not dense or dense[-1] != a:
                 dense.append(a)
+                dense_actions.append(actions[i])
             if b is None:
+                continue
+            # no densificar cruces de piso: el camino real (otmm) solo existe en
+            # un piso; rellenar el salto con casillas del piso de origen mandaba al
+            # bot al piso equivocado. El cambio se resuelve con el waypoint de
+            # transicion (subir/bajar).
+            if a.z != b.z:
                 continue
             path = wm.plan_to(a, b.x, b.y)
             if path and len(path) > 2:
@@ -358,14 +468,17 @@ class Bot:
                     if dense and dense[-1].x == p.x and dense[-1].y == p.y and dense[-1].z == p.z:
                         continue
                     dense.append(p)
+                    dense_actions.append(None)
             if len(dense) > 5000:
                 break
         if dense:
             route.waypoints = dense
+            route.actions = dense_actions
 
     def write_status(self, chosen: Optional[str], state: Optional[GameState]) -> None:
         if not self.status_file:
             return
+        notifiers = self.notifier.status()
         payload = {
             "loop": self.loops,
             "ticks": self.ticks,
@@ -378,9 +491,15 @@ class Bot:
             "connected": bool(getattr(state, "connected", False)) if state else False,
             "humanizer": self.humanizer.profile,
             "counters": dict(self.bb.counters),
+            "shiny_last": self.bb.notes.get("shiny_last"),
+            "capture_pending": [
+                {"name": t.get("name", ""), "shiny": bool(t.get("shiny"))}
+                for t in self.bb.notes.get("capture_pending", [])
+            ],
             "llm": self.llm.status() if self.llm is not None else {"enabled": False},
             "telemetry": self.telemetry.status() if self.telemetry is not None else {"enabled": False},
-            "telegram": self.notifier.status(),
+            "telegram": notifiers.get("telegram"),
+            "whatsapp": notifiers.get("whatsapp"),
             "updated": time.time(),
         }
         try:
@@ -445,6 +564,10 @@ class Bot:
 
     def run(self, max_ticks: Optional[int] = None) -> None:
         tick_seconds = float(self.cfg.get("settings", {}).get("tick_seconds", 0.1))
+        try:
+            log_every = max(1, int(self.cfg.get("settings", {}).get("log_every", 1) or 1))
+        except (TypeError, ValueError):
+            log_every = 1
         self._write_pid()
         if self.llm is not None:
             self.llm.start()
@@ -478,7 +601,7 @@ class Bot:
                 ):
                     self.inp.turn(self.humanizer.choice([0, 1, 2, 3]))
                     self.bb.mark("look")
-                if self.verbose:
+                if self.verbose and (log_every <= 1 or self.loops % log_every == 0):
                     print(self._format(state, chosen))
                 time.sleep(self._sleep_seconds(tick_seconds))
         finally:

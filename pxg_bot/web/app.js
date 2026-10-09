@@ -241,6 +241,17 @@ function renderState(s) {
               ["captured", "capturas"], ["revive", "revives"], ["skill", "skills"],
               ["pokestop", "pokestops"], ["lure", "lures"]];
   document.getElementById("counters").textContent = CL.map(([k, l]) => `${l}: ${cnt[k] || 0}`).join("   ");
+  const si = document.getElementById("shiny-info");
+  if (si) {
+    const sl = s.shiny_last;
+    const cp = s.capture_pending || [];
+    const parts = [];
+    parts.push(sl ? `último shiny: ${sl.name} (id ${sl.id}) en (${sl.x},${sl.y})` : "último shiny: —");
+    parts.push(cp.length
+      ? "captura pendiente: " + cp.map((t) => `${t.name}${t.shiny ? " ✨" : ""}`).join(", ")
+      : "captura pendiente: —");
+    si.textContent = parts.join("  ·  ");
+  }
   document.getElementById("btn-start").disabled = !!s.running;
   document.getElementById("btn-stop").disabled = !s.running;
   document.getElementById("btn-pause").textContent = s.paused ? "Reanudar" : "Pausar";
@@ -273,6 +284,11 @@ function renderState(s) {
   if (capExcl && document.activeElement !== capExcl && cap.exclude != null) {
     capExcl.value = Array.isArray(cap.exclude) ? cap.exclude.join(", ") : String(cap.exclude || "");
   }
+  const capStop = document.getElementById("cap-stop");
+  if (capStop && document.activeElement !== capStop && cap.stop_on_capture != null) capStop.checked = !!cap.stop_on_capture;
+  const capSkull = document.getElementById("cap-shiny-skull");
+  const shinyCfg = (s.control && s.control.shiny) || {};
+  if (capSkull && document.activeElement !== capSkull && shinyCfg.skull != null) capSkull.value = shinyCfg.skull;
   const combat = (s.control && s.control.combat) || {};
   const aoemin = document.getElementById("aoemin");
   if (document.activeElement !== aoemin && combat.lure_visible_min != null) aoemin.value = combat.lure_visible_min;
@@ -307,10 +323,16 @@ function renderState(s) {
   if (revOut && document.activeElement !== revOut && rev.disconnect_when_out != null) revOut.checked = !!rev.disconnect_when_out;
   const revKey = document.getElementById("rev-key");
   if (revKey && document.activeElement !== revKey && rev.logout_key != null) revKey.value = rev.logout_key;
+  const revCombo = document.getElementById("rev-combo");
+  if (revCombo && document.activeElement !== revCombo && rev.combo_time != null) revCombo.value = rev.combo_time;
   const loot = (s.control && s.control.loot) || {};
   for (const [id, key] of LOOT_NUM_FIELDS) {
     const el = document.getElementById(id);
     if (el && document.activeElement !== el && loot[key] != null) el.value = loot[key];
+  }
+  const lootWl = document.getElementById("loot-whitelist");
+  if (lootWl && document.activeElement !== lootWl && Array.isArray(loot.whitelist)) {
+    lootWl.value = loot.whitelist.join(", ");
   }
   const readypct = document.getElementById("readypct");
   if (document.activeElement !== readypct && combat.ready_pct != null) readypct.value = combat.ready_pct;
@@ -434,10 +456,19 @@ function drawMap() {
   if (routeWps.length) {
     drawPolyline(ctx, routeWps, "#4fa3ffcc", 2.5, true);
     routeWps.forEach((p, i) => {
-      ctx.fillStyle = i === 0 ? "#57d97a" : "#4fa3ff";
+      const act = p.length > 3 ? p[3] : "";
+      const cx = sx(p[0]) + view.scale / 2, cy = sy(p[1]) + view.scale / 2;
+      ctx.fillStyle = act ? "#e0a53a" : (i === 0 ? "#57d97a" : "#4fa3ff");
       ctx.beginPath();
-      ctx.arc(sx(p[0]) + view.scale / 2, sy(p[1]) + view.scale / 2, 3, 0, Math.PI * 2);
+      ctx.arc(cx, cy, act ? 4.5 : 3, 0, Math.PI * 2);
       ctx.fill();
+      if (act) {
+        ctx.fillStyle = "#ffd27a";
+        ctx.font = "bold 12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(act === "up" ? "↑" : "↓", cx + 8, cy - 8);
+      }
     });
   }
   const px = lastState.x, py = lastState.y;
@@ -480,7 +511,7 @@ function centerOnPlayer() {
 
 async function loadRouteIntoEditor() {
   const r = await api("/api/route");
-  routeWps = (r.waypoints || []).map((p) => [p[0], p[1], p[2] ?? view.z]);
+  routeWps = (r.waypoints || []).map((p) => (p.length > 3 && p[3]) ? [p[0], p[1], p[2] ?? view.z, p[3]] : [p[0], p[1], p[2] ?? view.z]);
   document.getElementById("m-loop").checked = r.loop !== false;
   document.getElementById("m-pp").checked = !!r.ping_pong;
   setRoutePokemon(r.pokemon, r.pokemon_slot);
@@ -493,6 +524,35 @@ async function loadLootConfig() {
   for (const [id, key] of LOOT_NUM_FIELDS) {
     const el = document.getElementById(id);
     if (el && loot[key] != null) el.value = loot[key];
+  }
+  const wl = document.getElementById("loot-whitelist");
+  if (wl && Array.isArray(loot.whitelist)) wl.value = loot.whitelist.join(", ");
+}
+
+async function refreshLootItems() {
+  const box = document.getElementById("loot-items");
+  if (!box) return;
+  const data = await api("/api/loot_items");
+  const items = data.items || {};
+  const names = Object.keys(items);
+  if (!names.length) { box.textContent = "(aún no ha aprendido ninguno)"; return; }
+  names.sort();
+  box.innerHTML = "";
+  for (const name of names) {
+    const b = document.createElement("button");
+    b.className = "mini ghost";
+    b.style.margin = "1px 3px";
+    b.textContent = `${name} (${items[name]})`;
+    b.title = "Añadir a la whitelist";
+    b.onclick = () => {
+      const el = document.getElementById("loot-whitelist");
+      if (!el) return;
+      const cur = (el.value || "").split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+      if (!cur.some((x) => x.toLowerCase() === name.toLowerCase())) cur.push(name);
+      el.value = cur.join(", ");
+      if (el.onchange) el.onchange({ target: el });
+    };
+    box.appendChild(b);
   }
 }
 
@@ -620,6 +680,78 @@ async function saveTelegram() {
 async function pollTelegram() {
   const r = await api("/api/telegram");
   renderTelegramStatus(r.status || {}, r.commands || {});
+}
+
+/* ---------------- whatsapp (CallMeBot, solo salida) ---------------- */
+const WA_EVENTS = [
+  ["death", "wa-ev-death"],
+  ["player", "wa-ev-player"],
+  ["shiny", "wa-ev-shiny"],
+  ["capture", "wa-ev-capture"],
+  ["revives_out", "wa-ev-revives_out"],
+  ["disconnect", "wa-ev-disconnect"],
+];
+
+function waPayload() {
+  const val = (id) => { const e = document.getElementById(id); return e ? e.value : ""; };
+  const events = {};
+  for (const [k, id] of WA_EVENTS) {
+    const c = document.getElementById(id);
+    events[k] = c ? c.checked : true;
+  }
+  const en = document.getElementById("wa-enabled");
+  const prov = (val("wa-provider") || "meta");
+  return {
+    enabled: en ? en.checked : false,
+    provider: prov,
+    phone: (val("wa-phone") || "").trim(),
+    token: (val("wa-token") || "").trim(),
+    phone_number_id: (val("wa-pnid") || "").trim(),
+    api_version: (val("wa-apiver") || "").trim() || "v21.0",
+    apikey: (val("wa-apikey") || "").trim(),
+    player_range: parseInt(val("wa-range"), 10) || 7,
+    events,
+  };
+}
+
+function renderWhatsappStatus(st) {
+  st = st || {};
+  const s = document.getElementById("wa-state");
+  if (s) s.textContent = st.enabled ? "ON" : (st.active ? "faltan datos" : "OFF");
+  const info = document.getElementById("wa-info");
+  if (!info) return;
+  const parts = [st.enabled ? "activo" : "inactivo"];
+  if (st.sent != null) parts.push("enviados: " + st.sent);
+  if (st.last_event) parts.push("último: " + st.last_event);
+  if (st.error) parts.push("error: " + st.error);
+  info.textContent = parts.join(" · ");
+}
+
+async function loadWhatsapp() {
+  const r = await api("/api/whatsapp");
+  const t = r.config || {};
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+  const chk = (id, v) => { const e = document.getElementById(id); if (e) e.checked = !!v; };
+  chk("wa-enabled", t.enabled);
+  set("wa-provider", t.provider || "meta");
+  set("wa-phone", t.phone || "");
+  set("wa-token", t.token || "");
+  set("wa-pnid", t.phone_number_id || "");
+  set("wa-apiver", t.api_version || "v21.0");
+  set("wa-apikey", t.apikey || "");
+  set("wa-range", t.player_range != null ? t.player_range : 7);
+  const ev = t.events || {};
+  for (const [k, id] of WA_EVENTS) chk(id, ev[k] !== false);
+  renderWhatsappStatus(r.status || {});
+}
+
+async function saveWhatsapp() {
+  await api("/api/whatsapp", "POST", waPayload());
+}
+
+async function pollWhatsapp() {
+  const r = await api("/api/whatsapp");
+  renderWhatsappStatus(r.status || {});
 }
 
 async function refreshRoutes() {
@@ -846,7 +978,7 @@ function wireMap() {
     const data = await api("/api/routes");
     const r = (data.routes || {})[name];
     if (!r) return;
-    routeWps = (r.waypoints || []).map((p) => [p[0], p[1], p[2] ?? view.z]);
+    routeWps = (r.waypoints || []).map((p) => (p.length > 3 && p[3]) ? [p[0], p[1], p[2] ?? view.z, p[3]] : [p[0], p[1], p[2] ?? view.z]);
     document.getElementById("m-loop").checked = r.loop !== false;
     document.getElementById("m-pp").checked = !!r.ping_pong;
     setRoutePokemon(r.pokemon, r.pokemon_slot);
@@ -895,7 +1027,8 @@ function wireMap() {
     const my = (e.clientY - rect.top) * c.height / rect.height;
     if (view.edit) {
       const [tx, ty] = tileAt(mx, my);
-      routeWps.push([tx, ty, view.z]);
+      const kind = (document.getElementById("m-wpkind") || {}).value || "";
+      routeWps.push(kind ? [tx, ty, view.z, kind] : [tx, ty, view.z]);
       drawMap();
     } else {
       dragging = { mx, my, cx: view.cx, cy: view.cy };
@@ -994,6 +1127,26 @@ function wire() {
     tgTest.disabled = false;
     tgTest.textContent = old;
   };
+  const waIds = ["wa-enabled", "wa-provider", "wa-phone", "wa-token", "wa-pnid",
+                 "wa-apiver", "wa-apikey", "wa-range",
+                 ...WA_EVENTS.map((e) => e[1])];
+  for (const id of waIds) {
+    const el = document.getElementById(id);
+    if (el) el.onchange = saveWhatsapp;
+  }
+  const waTest = document.getElementById("wa-test");
+  if (waTest) waTest.onclick = async () => {
+    const old = waTest.textContent;
+    waTest.disabled = true;
+    waTest.textContent = "Enviando…";
+    const p = waPayload();
+    const r = await api("/api/whatsapp/test", "POST", {
+      provider: p.provider, phone: p.phone, token: p.token,
+      phone_number_id: p.phone_number_id, api_version: p.api_version, apikey: p.apikey });
+    alert(r.ok ? "WhatsApp de prueba enviado ✅" : "Error: " + (r.error || "desconocido"));
+    waTest.disabled = false;
+    waTest.textContent = old;
+  };
   document.getElementById("btn-pause").onclick = () => api("/api/control", "POST", { paused: !(lastState.paused) });
   document.getElementById("btn-panic").onclick = async () => {
     await api("/api/command", "POST", { cmd: "stop" });
@@ -1026,6 +1179,14 @@ function wire() {
   const capExcl = document.getElementById("cap-exclude");
   if (capExcl) capExcl.onchange = (e) =>
     api("/api/control", "POST", { capture: { exclude: _capNames(e.target.value) } });
+  const capStop = document.getElementById("cap-stop");
+  if (capStop) capStop.onchange = (e) =>
+    api("/api/control", "POST", { capture: { stop_on_capture: e.target.checked } });
+  const capSkull = document.getElementById("cap-shiny-skull");
+  if (capSkull) capSkull.onchange = (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (!isNaN(n) && n >= 0) api("/api/control", "POST", { shiny: { skull: n } });
+  };
   document.getElementById("aoemin").onchange = (e) => {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { lure_visible_min: n } });
@@ -1081,6 +1242,11 @@ function wire() {
   const revKey = document.getElementById("rev-key");
   if (revKey) revKey.onchange = (e) =>
     api("/api/control", "POST", { revive: { logout_key: (e.target.value || "F12") } });
+  const revCombo = document.getElementById("rev-combo");
+  if (revCombo) revCombo.onchange = (e) => {
+    const n = parseFloat(e.target.value);
+    if (!isNaN(n) && n >= 0) api("/api/control", "POST", { revive: { combo_time: n } });
+  };
   document.getElementById("readypct").onchange = (e) => {
     const n = parseInt(e.target.value, 10);
     if (n >= 1) api("/api/control", "POST", { combat: { ready_pct: n } });
@@ -1099,6 +1265,11 @@ function wire() {
       if (!isNaN(n) && n >= 0) api("/api/control", "POST", { loot: { [key]: n } });
     };
   }
+  const lootWlEl = document.getElementById("loot-whitelist");
+  if (lootWlEl) lootWlEl.onchange = (e) => {
+    const list = (e.target.value || "").split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+    api("/api/control", "POST", { loot: { whitelist: list } });
+  };
   document.getElementById("idleen").onchange = (e) =>
     api("/api/control", "POST", { route_behavior: { start_idle_enabled: e.target.checked } });
   document.getElementById("idlesecs").onchange = (e) => {
@@ -1132,6 +1303,12 @@ function wire() {
     logAutoScroll = !logAutoScroll;
     e.target.textContent = logAutoScroll ? "auto-scroll" : "scroll off";
   };
+  const wipe = document.getElementById("btn-log-wipe");
+  if (wipe) wipe.onclick = async () => {
+    if (!confirm("¿Vaciar el registro?")) return;
+    await api("/api/log/clear", "POST", {});
+    pollLog();
+  };
   document.getElementById("psk-refresh").onclick = refreshPokemonSkills;
   document.getElementById("ign-refresh").onclick = refreshIgnore;
   wireMap();
@@ -1140,9 +1317,11 @@ function wire() {
 
 wire();
 loadLootConfig();
+refreshLootItems();
 loadRecovery();
 loadProcess();
 loadTelegram();
+loadWhatsapp();
 loadRouteIntoEditor();
 refreshRoutes();
 refreshPokemonSkills();
@@ -1152,8 +1331,10 @@ setInterval(pollLog, 1000);
 setInterval(pollWorld, 1000);
 setInterval(refreshPokemonSkills, 4000);
 setInterval(refreshIgnore, 5000);
+setInterval(refreshLootItems, 8000);
 setInterval(pollDeaths, 3000);
 setInterval(pollTelegram, 6000);
+setInterval(pollWhatsapp, 6000);
 pollState();
 pollWorld();
 pollDeaths();

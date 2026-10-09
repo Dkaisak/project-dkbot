@@ -1,7 +1,7 @@
 -- Agente Lua PXG v3: estado + comandos. Cancela su tick anterior al reejecutarse.
 -- `PXG_DIR` lo inyecta el loader (DLL en Windows / attach en Linux). Usar
 -- SIEMPRE barras normales: Lua 5.1 trata `\U`, `\P`... como escapes invalidos.
-local DIR = _G.PXG_DIR or "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata"
+local DIR = _G.PXG_DIR or "/home/dkaisak/Descargas/pxg-linux/mydata"
 DIR = DIR:gsub("\\", "/")
 local STATE = DIR .. "/pxg_bot_state.json"
 local CMD = DIR .. "/pxg_bot_cmd.txt"
@@ -498,6 +498,56 @@ local function snapCreature(c)
   }
 end
 
+-- Items de un tile (para la whitelist de loot: saber que hay en el cuerpo).
+local function itemName(it, id)
+  -- El nombre puede venir del Item o del ThingType (g_things). Se prueban varias
+  -- vias porque en PXG el Item no siempre expone getName.
+  local function clean(s)
+    if s == nil then return "" end
+    local t = tostring(s)
+    return t
+  end
+  local ok1, n1 = pcall(function() return it.getName and it:getName() end)
+  if clean(n1) ~= "" then return clean(n1) end
+  if g_things and g_things.getThingType then
+    -- ThingCategoryItem = 1
+    for _, cat in ipairs({ 1, 0, 2 }) do
+      local okt, tt = pcall(function() return g_things.getThingType(id, cat) end)
+      if okt and tt then
+        local ok2, n2 = pcall(function() return tt:getName() end)
+        if clean(n2) ~= "" then return clean(n2) end
+      end
+    end
+    local okt2, tt2 = pcall(function() return g_things.getThingType(id) end)
+    if okt2 and tt2 then
+      local ok3, n3 = pcall(function() return tt2:getName() end)
+      if clean(n3) ~= "" then return clean(n3) end
+    end
+  end
+  local ok4, n4 = pcall(function() return it.getTooltip and it:getTooltip() end)
+  if clean(n4) ~= "" then return clean(n4) end
+  return ""
+end
+
+local function tileItems(x, y, z)
+  local ok, t = pcall(g_map.getTile, { x = x, y = y, z = z })
+  if not ok or not t then return nil end
+  local okg, items = pcall(function() return t:getItems() end)
+  if not okg or type(items) ~= "table" then return nil end
+  local out = {}
+  for _, it in ipairs(items) do
+    local oid, iid = pcall(function() return it:getId() end)
+    local oct, ct = pcall(function() return it.getCount and it:getCount() end)
+    local id = (oid and tonumber(iid)) or 0
+    out[#out + 1] = {
+      id = id,
+      name = itemName(it, id),
+      count = (oct and tonumber(ct)) or 1,
+    }
+  end
+  return out
+end
+
 local function safeCall(fn)
   local ok, r = pcall(fn)
   if ok then return r end
@@ -874,7 +924,41 @@ local function exec(line)
         res = ok and tostring(t) or ("err:" .. tostring(t):sub(1, 50))
       end
     end
-  elseif op == "loot" then res = g_game.collectLoot()
+  elseif op == "loot" then
+    -- Snapshot de los items alrededor; tras collectLoot(), el diff son los
+    -- looteados (ids). El bot los cruza con los nombres del mensaje de botin
+    -- ("Botin de X: item1 y item2") para aprender nombre -> id.
+    local function snapAround()
+      local out = {}
+      local lp = g_game.getLocalPlayer()
+      if not lp then return out end
+      local p = lp:getPosition()
+      for dx = -1, 1 do
+        for dy = -1, 1 do
+          local t = g_map.getTile({ x = p.x + dx, y = p.y + dy, z = p.z })
+          if t then
+            local okc, items = pcall(function() return t:getItems() end)
+            if okc and items then
+              for _, it in ipairs(items) do
+                local oid, iid = pcall(function() return it:getId() end)
+                if oid and iid then
+                  out[(p.x + dx) .. "," .. (p.y + dy) .. "," .. tonumber(iid)] = tonumber(iid)
+                end
+              end
+            end
+          end
+        end
+      end
+      return out
+    end
+    local before = snapAround()
+    res = g_game.collectLoot()
+    local after = snapAround()
+    local diff = {}
+    for k, id in pairs(before) do
+      if not after[k] then diff[#diff + 1] = id end
+    end
+    PXG_LOOT_IDS = diff
   elseif op == "pokestop" then
     -- pokestop: para al pokemon. Metodos configurables:
     --   pokestop            -> game_pokemon.pokeStop() (fallback talk)
@@ -1948,6 +2032,39 @@ local function exec(line)
     end
     table.sort(parts)
     res = "g_gameActions=[" .. table.concat(parts, ",") .. "]"
+  elseif op == "itemname" then
+    -- diagnostico: vuelca a DIR/itemprobe.txt la API del ThingType/Item
+    local id = tonumber(arg)
+    local f = io.open(DIR .. "/itemprobe.txt", "w")
+    local function w(s) if f then f:write(tostring(s) .. "\n") end end
+    w("id=" .. tostring(id))
+    local okt, tt = pcall(function() return g_things.getThingType(id, 1) end)
+    w("tt ok=" .. tostring(okt) .. " tt=" .. tostring(tt ~= nil) .. " type=" .. type(tt))
+    if okt and tt then
+      local cands = { "getName", "getDescription", "getArticle", "getPluralName",
+                      "getCategory", "getType", "getSize", "getElevation", "getAttributes",
+                      "getAttr", "getItemName", "getThingName", "getFormattedName",
+                      "getLookDescription", "isContainer", "isStackable", "isGround",
+                      "getFluidSource", "getOffset", "getOffsetX", "getOffsetY", "getWidth",
+                      "getHeight", "getRealSize", "isAnimation", "getAnimationPhases" }
+      for _, m in ipairs(cands) do
+        local okm, vm = pcall(function() return tt[m] end)
+        if type(vm) ~= "nil" then w("cand " .. m .. " type=" .. type(vm)) end
+      end
+    end
+    w("--- g_game name/item ---")
+    if g_game then
+      for k, v in pairs(g_game) do
+        if type(k) == "string" then
+          local lk = k:lower()
+          if lk:find("name") or lk:find("item") or lk:find("thing") then
+            w("gg " .. k .. ":" .. type(v))
+          end
+        end
+      end
+    end
+    if f then f:close() end
+    res = "itemname written"
   else
     res = "unknown:" .. tostring(op)
   end
@@ -2267,7 +2384,10 @@ local function snapshot()
         local dkey = tostring(info.name) .. "|" .. tostring(info.x) .. "|" .. tostring(info.y) .. "|" .. tostring(info.z)
         if not seen_key[dkey] then
           seen_key[dkey] = true
-          st.defeated[#st.defeated + 1] = { id = id, name = info.name, x = info.x, y = info.y, z = info.z }
+          st.defeated[#st.defeated + 1] = {
+            id = id, name = info.name, x = info.x, y = info.y, z = info.z,
+            items = tileItems(info.x, info.y, info.z),
+          }
         end
       end
       PXG_TRACK[id] = nil
@@ -2349,6 +2469,7 @@ local function snapshot()
   st.capture_name = PXG_CAP_NAME or ""
   st.loots = PXG_LOOTS or 0
   st.loot_msg = PXG_LOOT_MSG or ""
+  st.loot_ids = PXG_LOOT_IDS or {}
   -- posicion y hp del pokemon propio (summon del jugador)
   st.pokemon_pos = nil
   st.pokemon_hp = nil

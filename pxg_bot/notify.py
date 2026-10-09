@@ -137,7 +137,11 @@ def send_photo(token: str, chat_id: str, photo: bytes, filename: str = "screen.p
 
 
 class Notifier:
-    def __init__(self, cfg: dict):
+    """Avisos por un canal (Telegram o WhatsApp). La deteccion de eventos es
+    comun; solo cambia el envio (`_send`)."""
+
+    def __init__(self, cfg: dict, section: str = "telegram"):
+        self.section = section
         self._lock = threading.Lock()
         self._q: "queue.Queue" = queue.Queue()
         self._thread = None
@@ -148,31 +152,49 @@ class Notifier:
         self.last_at = 0.0
         self._last: dict = {}       # dedupe: clave -> ts
         self._prev: dict = {}       # muestra previa (deteccion de muerte)
+        self._shiny_active: set = set()   # shinies ya avisados (en pantalla)
         self._connected = None
-        self.set_config((cfg or {}).get("telegram", {}) or {})
+        self.cfg: dict = {}
+        self.events: dict = {}
+        self.cooldowns: dict = {}
+        self._raw: dict = {}
+        self.set_config((cfg or {}).get(section, {}) or {})
         if self.enabled():
             self._ensure_thread()
 
     # --- config ---
-    def set_config(self, tg: dict) -> None:
-        tg = tg or {}
+    def set_config(self, data: dict) -> None:
+        data = data or {}
         with self._lock:
+            self._raw = dict(data)
             self.cfg = {
-                "enabled": bool(tg.get("enabled", False)),
-                "bot_token": str(tg.get("bot_token", "") or ""),
-                "chat_id": str(tg.get("chat_id", "") or ""),
-                "parse_mode": str(tg.get("parse_mode", "HTML") or ""),
-                "player_range": int(tg.get("player_range", 7) or 7),
+                "enabled": bool(data.get("enabled", False)),
+                "player_range": int(data.get("player_range", 7) or 7),
             }
-            self.events = dict(tg.get("events") or {})
-            self.cooldowns = dict(tg.get("cooldowns") or {})
+            self.events = dict(data.get("events") or {})
+            self.cooldowns = dict(data.get("cooldowns") or {})
         if self.enabled():
             self._ensure_thread()
 
+    def _creds_ok(self) -> bool:
+        if self.section == "whatsapp":
+            from .whatsapp import whatsapp_configured
+
+            return whatsapp_configured(self._raw)
+        return bool(self._raw.get("bot_token")) and bool(self._raw.get("chat_id"))
+
     def enabled(self) -> bool:
-        return (bool(self.cfg.get("enabled"))
-                and bool(self.cfg.get("bot_token"))
-                and bool(self.cfg.get("chat_id")))
+        return bool(self.cfg.get("enabled")) and self._creds_ok()
+
+    def _send(self, text: str):
+        if self.section == "whatsapp":
+            from .whatsapp import send_whatsapp, to_plain
+
+            return send_whatsapp(self._raw, to_plain(text))
+        return send_message(str(self._raw.get("bot_token", "") or ""),
+                            str(self._raw.get("chat_id", "") or ""),
+                            text,
+                            str(self._raw.get("parse_mode", "HTML") or ""))
 
     def _event_on(self, name: str) -> bool:
         return bool(self.events.get(name, True))
@@ -188,7 +210,7 @@ class Notifier:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="telegram", daemon=True)
+        self._thread = threading.Thread(target=self._run, name=self.section, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
@@ -199,9 +221,7 @@ class Notifier:
                 continue
             if text is None:
                 break
-            tok, chat = self.cfg.get("bot_token"), self.cfg.get("chat_id")
-            parse = self.cfg.get("parse_mode", "HTML")
-            ok, err = send_message(tok, chat, text, parse)
+            ok, err = self._send(text)
             with self._lock:
                 if ok:
                     self.sent += 1
@@ -264,14 +284,9 @@ class Notifier:
             text += " ×%d" % count
         self.notify("capture", text)
 
-    def test(self, token: str = None, chat_id: str = None,
-             parse_mode: str = None) -> dict:
-        token = token or self.cfg.get("bot_token")
-        chat_id = chat_id or self.cfg.get("chat_id")
-        parse_mode = parse_mode or self.cfg.get("parse_mode", "HTML")
-        ok, err = send_message(token, chat_id,
-                               "✅ Prueba de dkbot: los avisos por Telegram funcionan.",
-                               parse_mode)
+    def test(self) -> dict:
+        label = "WhatsApp" if self.section == "whatsapp" else "Telegram"
+        ok, err = self._send("✅ Prueba de dkbot: los avisos por %s funcionan." % label)
         if ok:
             self.sent += 1
         return {"ok": ok, "error": err}
@@ -336,13 +351,21 @@ class Notifier:
                            % (c.name or "?", d, self._who(state)))
 
     def _check_shinies(self, state, now: float) -> None:
+        # Un aviso por criatura mientras siga en pantalla (antes reavisaba cada
+        # 10 s por el cooldown, lo que parecia spam). Al desaparecer se rearma
+        # para un nuevo encuentro.
+        present = set()
         for c in state.creatures:
             if not getattr(c, "shiny", False) or not c.attackable:
                 continue
-            key = "shiny:%s" % (c.uid or "%s@%d,%d,%d" % (c.name, c.pos.x, c.pos.y, c.pos.z))
-            if self._cd_ok(key, self._cd("shiny", 10.0), now):
-                self._emit("shiny", "✨ <b>Shiny</b>: %s en (%d,%d,%d)"
-                           % (c.name, c.pos.x, c.pos.y, c.pos.z))
+            uid = c.uid or "%s@%d,%d,%d" % (c.name, c.pos.x, c.pos.y, c.pos.z)
+            present.add(uid)
+            if uid in self._shiny_active:
+                continue
+            self._shiny_active.add(uid)
+            self._emit("shiny", "✨ <b>Shiny</b>: %s en (%d,%d,%d)"
+                       % (c.name, c.pos.x, c.pos.y, c.pos.z))
+        self._shiny_active &= present
 
     def _check_revives(self, state, bb, now: float) -> None:
         if bb is None or not bb.notes.get("revives_out_done"):
@@ -354,11 +377,49 @@ class Notifier:
     # --- estado ---
     def status(self) -> dict:
         return {
+            "channel": self.section,
             "enabled": self.enabled(),
-            "configured": bool(self.cfg.get("bot_token")) and bool(self.cfg.get("chat_id")),
+            "configured": self._creds_ok(),
             "active": bool(self.cfg.get("enabled")),
             "sent": self.sent,
             "last_event": self.last_event,
             "last_at": round(self.last_at, 1) if self.last_at else None,
             "error": self.error,
         }
+
+
+class Notifiers:
+    """Fan-out de avisos: reparte cada evento a varios canales (Telegram + WhatsApp).
+
+    La deteccion de eventos corre por canal (barato) y cada uno tiene su propio
+    dedupe/cooldown; el bot solo habla con este objeto."""
+
+    def __init__(self, cfg: dict):
+        self.by_section = {
+            "telegram": Notifier(cfg, "telegram"),
+            "whatsapp": Notifier(cfg, "whatsapp"),
+        }
+
+    def set_config(self, section: str, data: dict) -> None:
+        ch = self.by_section.get(section)
+        if ch is not None:
+            ch.set_config(data)
+
+    def observe(self, state, bb=None) -> None:
+        for ch in self.by_section.values():
+            ch.observe(state, bb)
+
+    def capture(self, name: str = "", count: int = 1) -> None:
+        for ch in self.by_section.values():
+            ch.capture(name, count)
+
+    def notify(self, event: str, text: str) -> None:
+        for ch in self.by_section.values():
+            ch.notify(event, text)
+
+    def close(self, timeout: float = 5.0) -> None:
+        for ch in self.by_section.values():
+            ch.close(timeout)
+
+    def status(self) -> dict:
+        return {section: ch.status() for section, ch in self.by_section.items()}

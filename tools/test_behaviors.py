@@ -225,6 +225,27 @@ def test_capture_shiny_after_loot() -> None:
     print("OK captura de shiny tras loot (independiente de 'enabled')")
 
 
+def test_capture_shiny_without_loot() -> None:
+    """La captura es una fase independiente del loot: promueve el cuerpo shiny
+    aunque NO este looteado (el loot es una fase anterior por prioridad)."""
+    bb = Blackboard()
+    st = make_state()
+    st.creatures = [Creature(cid=7, name="Shiny X", pos=Vec3(100, 100, 7),
+                             hp_pct=100, kind=CreatureKind.MONSTER, shiny=True)]
+    st.defeated = [{"id": "7", "name": "Shiny X", "x": 100, "y": 100, "z": 7}]
+    bb.update_corpses(st)
+    assert bb.notes["corpse_meta"]["7"]["shiny"] is True
+    st.creatures = []
+    # sin looted_ids: la captura lo procesa igual (no depende del loot)
+    cap = CaptureBehavior({"enabled": True, "catch_all": False}, {})
+    assert cap.evaluate(st, bb) is True, "no debe depender de que este looteado"
+    assert bb.notes["capture_pending"][0]["id"] == "7"
+    inp = RecInput()
+    cap.act(st, bb, inp)
+    assert inp.ball_throws, "debe lanzar la ball al cuerpo shiny"
+    print("OK captura de shiny sin depender del loot (fase independiente)")
+
+
 def test_capture_nonshiny_off() -> None:
     bb = Blackboard()
     st = make_state()
@@ -528,6 +549,94 @@ def test_shiny_observe() -> None:
                 _os.remove(p)
             except OSError:
                 pass
+
+
+def test_shiny_conservative() -> None:
+    """No marca shiny si el 'normal' aun no es fiable o hay variantes ambiguas
+    (evita falsos positivos como el de Fearow con pocas muestras)."""
+    from pxg_bot.shiny import ShinyTable
+    t = ShinyTable("")  # sin fichero
+    # pocas observaciones (< min_obs) -> sin normal -> no marca nada
+    t.counts = {"Fearow": {5462: 4, 5464: 1}}
+    assert t.normal("Fearow") is None, "con 4 muestras no es fiable"
+    # normal solido -> marca el outfit distinto como shiny
+    t.counts = {"Rattata": {36: 50, 512: 1}}
+    assert t.normal("Rattata") == 36
+    # dos outfits con conteo significativo -> variantes, no shiny -> no marca
+    t.counts = {"Mix": {10: 50, 20: 30}}
+    assert t.normal("Mix") is None, "variantes ambiguas -> no marcar"
+    print("OK shiny: deteccion conservadora (min_obs + ambiguedad)")
+
+
+def test_capture_no_resend_on_restart() -> None:
+    """Al reiniciar el bot no se reenvian capturas ya notificadas: el contador
+    `captures_seen` se persiste en pxg_bot_seen.json."""
+    import tempfile
+    from pxg_bot.bot import Bot
+    from pxg_bot.input import MockInput
+    from pxg_bot.mock import MockStateSource
+    d = tempfile.mkdtemp()
+    cfg = {
+        "lua": {"state_file": d + "/state.json", "cmd_file": d + "/cmd.txt",
+                "control_file": d + "/control.json", "status_file": d + "/status.json",
+                "minimap_file": "", "shiny_file": d + "/shiny.json",
+                "pokemon_skills_file": d + "/psk.json", "ignore_file": d + "/ign.json",
+                "clans_file": d + "/clans.json", "routes_file": d + "/routes.json"},
+        "settings": {"humanizer": {"enabled": False}},
+        "behaviors": {}, "telegram": {"enabled": False}, "route": {},
+    }
+    st = GameState(player=Player(), connected=True)
+    st.captures = 3
+    st.capture_name = "Fearow"
+
+    def make_bot():
+        b = Bot(MockStateSource(cfg), MockInput(), cfg)
+        b._calls = []
+        b.notifier.capture = lambda name="", count=1: b._calls.append((name, count))
+        return b
+
+    b1 = make_bot()
+    b1._count_captures(st)   # primer arranque: siembra la base sin avisar
+    assert b1._calls == [], "el primer arranque no debe reenviar el historial"
+    st.captures = 4
+    b1._count_captures(st)
+    assert b1._calls == [("Fearow", 1)], "una captura nueva sí se avisa"
+    b2 = make_bot()   # reinicio del bot
+    b2._count_captures(st)
+    assert b2._calls == [], "al reiniciar NO debe reenviar lo ya notificado"
+    st.captures = 6
+    b2._count_captures(st)
+    assert b2._calls == [("Fearow", 2)], "solo el delta nuevo"
+    st.captures = 1   # agente reiniciado (contador a 0)
+    b3 = make_bot()
+    b3._count_captures(st)
+    assert b3._calls == [], "agente reiniciado -> resincronizar sin reavisar"
+    print("OK telegram: no reenvia capturas al reiniciar el bot")
+
+
+def test_capture_stop_on_capture() -> None:
+    """Toggle `stop_on_capture`: deja de lanzar balls al confirmarse la captura."""
+    def setup(**cfg):
+        bb = Blackboard()
+        bb.notes["capture_pending"] = [
+            {"id": "1", "name": "Fearow", "x": 100, "y": 100, "z": 7, "n": 0}]
+        st = make_state(px=100, py=100)
+        st.pokemon_pos = (100, 100, 7)
+        cap = CaptureBehavior({"enabled": True, "range": 4, "interval": 0.0, **cfg}, {})
+        return bb, st, cap, RecInput()
+
+    # ON: el latch de captura corta el lanzamiento (no tira ball) y saca el cuerpo
+    bb, st, cap, inp = setup(stop_on_capture=True)
+    bb.notes["capture_stop_at"] = time.time()
+    cap.act(st, bb, inp)
+    assert inp.ball_throws == [], "toggle on: no debe lanzar al capturar"
+    assert bb.notes["capture_pending"] == [], "el cuerpo capturado sale de la cola"
+    # OFF: el latch se ignora -> lanza ball (comportamiento previo)
+    bb, st, cap, inp = setup(stop_on_capture=False)
+    bb.notes["capture_stop_at"] = time.time()
+    cap.act(st, bb, inp)
+    assert inp.ball_throws, "toggle off: debe seguir lanzando"
+    print("OK captura: toggle 'dejar de lanzar balls al capturar'")
 
 
 def test_lure_combo_custom() -> None:
@@ -974,6 +1083,43 @@ def test_revive_exhausted_fallback() -> None:
     print("OK revive: fallback rapido al agotarse el combo")
 
 
+def test_revive_combo_time() -> None:
+    """Tiempo de combo: no revive hasta que pasen `combo_time` s desde la primera
+    skill (para no cortar la animacion); el pokemon debilitado lo ignora."""
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 0}]  # combo agotado
+    st.creatures = [Creature(cid=1, name="E", pos=Vec3(101, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, is_wild=True)]
+    rb = ReviveBehavior(_revive_cfg(combo_time=2.0), {}, {"attack_range": 3})
+    bb = Blackboard()
+    bb.notes["combo_start"] = time.time()          # la 1a skill acaba de salir
+    assert rb._combo_waiting(bb) is True
+    assert rb.evaluate(st, bb) is False, "no debe revivir antes de combo_time"
+    bb.notes["combo_start"] = time.time() - 3.0    # ya paso el tiempo de combo
+    assert rb._combo_waiting(bb) is False
+    assert rb.evaluate(st, bb) is True, "cumplido combo_time -> revive (caso C)"
+    # el pokemon debilitado ignora el tiempo de combo
+    bb2 = Blackboard()
+    bb2.notes["combo_start"] = time.time()
+    st.party = [Pokemon(slot=3, name="X", hp_pct=0)]
+    assert rb.evaluate(st, bb2) is True, "debilitado -> revive ya, sin esperar animacion"
+    # combo listo de nuevo -> reinicia el reloj (nuevo ciclo)
+    bb3 = Blackboard()
+    bb3.notes["combo_start"] = time.time()
+    st.party = [Pokemon(slot=3, name="X", hp_pct=100)]
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100}]
+    rb.evaluate(st, bb3)
+    assert bb3.notes.get("combo_start") is None, "combo listo -> nuevo ciclo"
+    # combo_time=0 -> desactivado (comportamiento anterior)
+    rb0 = ReviveBehavior(_revive_cfg(), {}, {"attack_range": 3})
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 0}]
+    bb4 = Blackboard()
+    bb4.notes["combo_start"] = time.time()
+    assert rb0.evaluate(st, bb4) is True, "con combo_time=0 no hay espera"
+    print("OK revive: tiempo de combo (no corta la animacion de las skills)")
+
+
 def test_buff_respects_gate() -> None:
     """Con `buff_gate=combat`, el buff no sale si no estan todos a rango."""
     bb = Blackboard()
@@ -1100,6 +1246,35 @@ def test_route_start_idle_toggle() -> None:
     print("OK ruta: idle de inicio activable/desactivable")
 
 
+def test_route_floor_transition() -> None:
+    """Waypoint 'subir'/'bajar': navega a la escalera y espera a que cambie la z
+    antes de avanzar (no corta el cambio de piso)."""
+    wps = [[100, 100, 7], [110, 100, 7, "up"], [110, 100, 8], [120, 100, 8]]
+    rb = RouteBehavior({"enabled": True, "arrive_distance": 1,
+                        "transition_timeout_secs": 99.0, "resend_secs": 0.0}, {},
+                       Route.from_config(wps, loop=True))
+    assert rb.route.actions[1] == "up", "el 4o campo debe parsearse como accion"
+    assert rb.route.actions[0] is None, "un waypoint normal no lleva accion"
+    rb.route.index = 1
+    bb = Blackboard()
+    st = make_state()
+    st.player = Player(name="P", pos=Vec3(108, 100, 7), hp=100, max_hp=100)
+    inp = RecInput()
+    rb.act(st, bb, inp)
+    assert rb.route.index == 1, "no debe avanzar antes de cambiar de piso"
+    assert inp.walks and inp.walks[-1] == (110, 100, 7), "debe navegar a la escalera"
+    # encima de la escalera pero sin cambio de z: sigue esperando
+    st.player = Player(name="P", pos=Vec3(110, 100, 7), hp=100, max_hp=100)
+    rb.act(st, bb, RecInput())
+    assert rb.route.index == 1, "encima de la escalera sigue esperando la z"
+    # cambio de piso -> avanza al waypoint del piso nuevo
+    st.player = Player(name="P", pos=Vec3(110, 100, 8), hp=100, max_hp=100)
+    rb.act(st, bb, RecInput())
+    assert rb.route.index == 2, "al cambiar la z debe avanzar"
+    assert Route.from_config([[1, 1, 5, "bajar"]]).actions[0] == "down", "'bajar' -> down"
+    print("OK ruta: waypoint de transicion subir/bajar (espera la z)")
+
+
 def test_lure_gather_timeout() -> None:
     """Sin juntar X, tras lure_gather_timeout pasa a hold; 0 = sin tope; se
     resetea al quedarse sin enemigos."""
@@ -1138,7 +1313,12 @@ def test_lure_gather_timeout() -> None:
     assert bb5.notes.get("lure_hold_min") == 5
     st2.creatures = st2.creatures[:4]
     assert cb.evaluate(st2, bb5) is True
-    assert bb5.notes.get("lure_state") == "resume", "hold normal por debajo de X -> resume"
+    assert bb5.notes.get("lure_state") in ("hold", "fight"), \
+        "con enemigos vivos NO vuelve a la ruta (los remata)"
+    # sin enemigos -> resume
+    st2.creatures = []
+    assert cb.evaluate(st2, bb5) is True
+    assert bb5.notes.get("lure_state") == "resume", "sin enemigos -> resume"
     # tope 0 = sin tope
     cb0 = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "lure_gather_timeout": 0}, {})
     bb0 = Blackboard()
@@ -1153,6 +1333,30 @@ def test_lure_gather_timeout() -> None:
     cb.evaluate(st0, bb2)
     assert bb2.notes.get("lure_gather_start") is None, "sin enemigos se resetea"
     print("OK lure: tope de tiempo (10s) pasa a hold; 0 = sin tope; se resetea sin enemigos")
+
+
+def test_lure_remata_no_vuelve_a_ruta() -> None:
+    """Con enemigos vivos (aunque sean menos que X o esten fuera de rango) el lure
+    NO vuelve a la ruta: los persigue para rematarlos."""
+    st = make_state()
+    st.pokemon_pos = (100, 100, 7)
+    st.moves = [{"key": "7", "aoe": True, "effect": "damage", "pct": 100, "name": "Air Vortex"}]
+    cb = CombatBehavior({"lure_aoe": True, "lure_visible_min": 5, "require_all_close": True,
+                         "attack_range": 3, "approach_cooldown": 0.0,
+                         "manage_fight_mode": False}, {})
+    bb = Blackboard()
+    bb.notes["lure_state"] = "fight"
+    st.creatures = [Creature(cid=1, name="E1", pos=Vec3(110, 100, 7), hp_pct=100,
+                             kind=CreatureKind.MONSTER, is_wild=True)]
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "fight", "con enemigo vivo no resume"
+    inp = RecInput()
+    cb.act(st, bb, inp)
+    assert inp.moves, "debe caminar hacia el enemigo (chase)"
+    st.creatures = []
+    assert cb.evaluate(st, bb) is True
+    assert bb.notes.get("lure_state") == "resume", "sin enemigos -> resume"
+    print("OK lure: con enemigos vivos remata (no vuelve a la ruta)")
 
 
 def test_lure_tope_wait() -> None:
@@ -1309,6 +1513,142 @@ def test_spec_id_parsing() -> None:
     assert st.connected, "un id no numerico no debe tumbar la lectura"
     assert len(st.creatures) == 2
     print("OK id no numerico ('spec3') se parsea sin romper")
+
+
+def test_shiny_by_skull() -> None:
+    """Deteccion de shiny por emblema (skull=55): exacta, sin depender del outfit."""
+    data = {
+        "connected": True, "name": "P", "x": 1, "y": 2, "z": 7, "hp": 10, "maxhp": 10,
+        "creatures": [
+            {"id": "1", "name": "Raticate", "x": 3, "y": 3, "z": 7, "hp": 100,
+             "monster": True, "outfit": 519, "skull": 55},
+            {"id": "2", "name": "Charizard", "x": 4, "y": 4, "z": 7, "hp": 100,
+             "monster": True, "outfit": 2439, "skull": 0},
+            {"id": "3", "name": "Otro", "x": 5, "y": 5, "z": 7, "hp": 100,
+             "monster": True, "outfit": 67, "skull": 62},
+        ],
+    }
+    st = LuaStateSource(_FakeBridge(data), {"shiny": {"skull": 55}}).read_state()
+    shiny = {c.name: c.shiny for c in st.creatures}
+    assert shiny["Raticate"] is True, "skull=55 -> shiny"
+    assert shiny["Charizard"] is False, "skull=0 -> no shiny (aunque el outfit difiera)"
+    assert shiny["Otro"] is False, "skull distinto -> no shiny"
+    print("OK shiny: deteccion por emblema (skull) exacta")
+
+
+def test_shiny_skull_to_capture() -> None:
+    """Cadena completa: criatura con skull=55 -> shiny -> cuerpo shiny -> ball."""
+    data = {"connected": True, "name": "P", "x": 100, "y": 100, "z": 7, "hp": 100, "maxhp": 100,
+            "creatures": [{"id": "7", "name": "Fearow", "x": 100, "y": 100, "z": 7, "hp": 100,
+                           "monster": True, "outfit": 520, "skull": 55}]}
+    src = LuaStateSource(_FakeBridge(data), {"shiny": {"skull": 55}})
+    st = src.read_state()
+    assert st.creatures[0].shiny is True, "skull=55 -> shiny"
+    bb = Blackboard()
+    bb.update_corpses(st)          # puebla shiny_ids / shiny_pos
+    st.defeated = [{"id": "7", "name": "Fearow", "x": 100, "y": 100, "z": 7, "items": []}]
+    st.creatures = []
+    bb.update_corpses(st)
+    assert bb.notes["corpse_meta"]["7"]["shiny"] is True, bb.notes.get("corpse_meta")
+    cap = CaptureBehavior({"enabled": True, "range": 4, "catch_all": False,
+                           "interval": 0.0}, {})
+    assert cap.evaluate(st, bb) is True, "el shiny debe encolarse para captura"
+    inp = RecInput()
+    cap.act(st, bb, inp)
+    assert inp.ball_throws, "debe lanzar la ball al shiny"
+    print("OK shiny: skull=55 -> cuerpo shiny -> lanza ball")
+
+
+def test_whatsapp_notifier() -> None:
+    """WhatsApp: HTML->texto, credenciales por proveedor (Meta/CallMeBot), fan-out."""
+    from pxg_bot.whatsapp import to_plain, send_callmebot, send_meta, whatsapp_configured
+    from pxg_bot.notify import Notifiers
+    assert to_plain("💀 <b>Muerto</b> (x)") == "💀 *Muerto* (x)"
+    assert to_plain("<b>a</b> <i>b</i>") == "*a* b"
+    ok, err = send_callmebot("", "hola", "")   # sin phone/apikey: no toca la red
+    assert ok is False and "phone" in err
+    ok, err = send_meta("", "", "", "hola")    # sin credenciales Meta
+    assert ok is False and "token" in err
+    assert whatsapp_configured({"provider": "meta", "token": "t", "phone_number_id": "1", "phone": "+1"})
+    assert not whatsapp_configured({"provider": "meta", "phone": "+1"})
+    assert whatsapp_configured({"provider": "callmebot", "phone": "+1", "apikey": "k"})
+    cfg = {"telegram": {"enabled": False},
+           "whatsapp": {"enabled": True, "provider": "callmebot",
+                        "phone": "+10000000000", "apikey": "k"}}
+    n = Notifiers(cfg)
+    try:
+        st = n.status()
+        assert set(st.keys()) == {"telegram", "whatsapp"}, st.keys()
+        assert st["whatsapp"]["configured"] is True
+        assert st["telegram"]["configured"] is False
+    finally:
+        n.close()
+    print("OK whatsapp: CallMeBot/Meta + fan-out de canales")
+
+
+def test_loot_whitelist() -> None:
+    """Whitelist de loot por item: con el loot off solo se lootean los cuerpos que
+    contienen un item de la lista."""
+    bb = Blackboard()
+    st = make_state()
+    st.defeated = [
+        {"id": "1", "name": "A", "x": 100, "y": 100, "z": 7,
+         "items": [{"id": 2269, "name": "Revive"}]},
+        {"id": "2", "name": "B", "x": 101, "y": 100, "z": 7,
+         "items": [{"id": 111, "name": "Basura"}]},
+    ]
+    bb.update_corpses(st)
+    loot = LootBehavior({"enabled": False, "whitelist": ["2269"], "collect_interval": 0.0,
+                         "reach": 0, "phase_secs": 99}, {})
+    assert loot.evaluate(st, bb) is True, "con un cuerpo whitelisted debe lootear"
+    pend = bb.notes["corpses_pending"]
+    assert [c["id"] for c in pend] == ["1"], "solo el cuerpo con el item de la whitelist"
+    bb2 = Blackboard()
+    bb2.update_corpses(st)
+    loot2 = LootBehavior({"enabled": False, "whitelist": []}, {})
+    assert loot2.evaluate(st, bb2) is False, "loot off sin whitelist -> no lootea"
+    print("OK loot: whitelist por item (lootea aunque el loot este off)")
+
+
+def test_loot_items_learn() -> None:
+    """Aprende nombre->id del mensaje de botin y lo usa en la whitelist."""
+    from pxg_bot.loot_items import LootItems
+    li = LootItems("")
+    msg = "11:58 Botín de Charizard: straws (20) y essences of fire (9)."
+    assert li.parse_names(msg) == ["straws", "essences of fire"], li.parse_names(msg)
+    li.observe(msg, [2866, 40701])
+    assert li.id_for("straws") == 2866
+    assert li.id_for("Essences of Fire") == 40701
+    bb = Blackboard()
+    bb.loot_items = li
+    loot = LootBehavior({"enabled": False, "whitelist": ["straws"], "reach": 0,
+                         "phase_secs": 99}, {})
+    st = make_state()
+    st.defeated = [{"id": "1", "name": "X", "x": 100, "y": 100, "z": 7,
+                    "items": [{"id": 2866}]}]
+    bb.update_corpses(st)
+    assert loot.evaluate(st, bb) is True, "debe reconocer el id traducido del nombre"
+    print("OK loot: aprende nombre->id del botin y lo usa en la whitelist")
+
+
+def test_tail_efficient() -> None:
+    """`_tail` lee solo el final del fichero (no carga todo en memoria)."""
+    import tempfile
+    from pxg_bot.webui import _tail
+    p = tempfile.mktemp()
+    try:
+        with open(p, "w", encoding="utf-8") as fh:
+            for i in range(20000):
+                fh.write("linea %d\n" % i)
+        out = _tail(p, 3)
+        assert out == ["linea 19997", "linea 19998", "linea 19999"], out
+    finally:
+        import os as _os
+        try:
+            _os.remove(p)
+        except OSError:
+            pass
+    print("OK log: _tail lee solo el final")
 
 
 def test_recovery_reconnect_same_character() -> None:
@@ -1508,6 +1848,7 @@ def main() -> int:
     test_loot_best_tile_walkable()
     test_loot_best_tile_far_cluster()
     test_capture_shiny_after_loot()
+    test_capture_shiny_without_loot()
     test_capture_nonshiny_off()
     test_fight_mode_lure()
     test_fight_mode_ignored_without_lure()
@@ -1530,12 +1871,14 @@ def main() -> int:
     test_lure_hold_requires_all_in_range()
     test_lure_fight_returns_to_hold()
     test_lure_gather_timeout()
+    test_lure_remata_no_vuelve_a_ruta()
     test_lure_tope_wait()
     test_aoe_cooldown_spacing()
     test_luabridge_state_cache()
     test_lure_summon_arrival_grace()
     test_route_calls_pokemon()
     test_route_start_idle_toggle()
+    test_route_floor_transition()
     test_revive_uses_route_slot()
     test_revive_urgent_when_dead()
     test_loot_yields_when_revive_urgent()
@@ -1543,6 +1886,7 @@ def main() -> int:
     test_revive_stun_bypass()
     test_revive_no_stun_only_trigger()
     test_revive_exhausted_fallback()
+    test_revive_combo_time()
     test_revive_no_double_after_lag()
     test_gate_ignores_far_enemy()
     test_gate_strict_requires_all_in_range()
@@ -1550,8 +1894,17 @@ def main() -> int:
     test_revives_left()
     test_aoe_cast_order_respects_combo()
     test_shiny_observe()
+    test_shiny_conservative()
+    test_capture_no_resend_on_restart()
+    test_capture_stop_on_capture()
     test_crisis_disabled()
     test_spec_id_parsing()
+    test_shiny_by_skull()
+    test_shiny_skull_to_capture()
+    test_whatsapp_notifier()
+    test_loot_whitelist()
+    test_loot_items_learn()
+    test_tail_efficient()
     test_recovery_reconnect_same_character()
     test_recovery_death_teleport_recall()
     test_recovery_summons_teleport_pokemon()

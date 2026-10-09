@@ -43,7 +43,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             print("aviso: el estado Lua no se actualiza; instala el agente "
                   "(tools/install_agent.py en Linux / tools/inject_windows.py en Windows)",
                   file=sys.stderr)
-        source = LuaStateSource(bridge)
+        source = LuaStateSource(bridge, cfg)
         inp = LuaInput(bridge)
     else:
         from pxg_bot.reader import MemoryStateSource

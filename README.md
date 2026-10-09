@@ -131,8 +131,14 @@ Cada `Creature` incluye además `outfit`, `uid`, `shiny`, `ignored`, `skull` y
 
 ## 5. Behaviors (`pxg_bot/behaviors.py`)
 
-Se eligen por prioridad (mayor primero). Si uno actúa, el resto del tick se
-salta.
+Se comportan como **fases** en orden de prioridad (mayor primero): la fase con
+trabajo corre hasta **concluir** (quedarse sin trabajo) y solo entonces pasa a la
+siguiente; si una fase está **desactivada** se salta y las demás continúan. Cada
+tick actúa **una** fase (la de mayor prioridad con trabajo). No hay dependencias
+entre cuerpos de fases distintas (p. ej. **captura no depende de que el loot haya
+loteado el cuerpo**: el loot es simplemente una fase anterior por prioridad). Hay
+excepciones de **seguridad** (p. ej. `loot`/`capture` ceden ante enemigos en
+pantalla o ante un revive urgente).
 
 | Prioridad | Behavior   | Qué hace |
 |----------:|------------|----------|
@@ -174,6 +180,12 @@ salta.
     cumplirse más de `fight_recover_secs` → vuelve a `hold` a reagrupar. Sin
     enemigos → `resume`.
   - **resume**: clic central, limpia estado, pausa `resume_pause_secs` → `idle`.
+  - **Rematar**: el lure **no vuelve a la ruta mientras haya enemigos en
+    pantalla** (aunque sean menos que `lure_visible_min` o estén **fuera de
+    rango**): se queda en `hold`/`fight` y **persigue** al enemigo visible más
+    cercano (camina hacia él) hasta matarlo. Solo pasa a `resume` (y vuelve a la
+    ruta) cuando **no queda ninguno**. Así remata al que quedó vivo o al nuevo que
+    llegó antes de retomar la ruta.
   - Única excepción al gate: **`panic_hp`** (vida baja del Pokémon).
 - **Buff en el lure**: lanza **una vez** la skill de buff (efecto con componente
   `buff`, p. ej. `buff/nevermiss`) cuando hay `buff_visible_min` enemigos en
@@ -231,6 +243,11 @@ salta.
 
 - Los cuerpos se cosechan **siempre** (`update_corpses`), independientes de la
   prioridad: el agente reporta cada derrotado un solo tick.
+- **Whitelist por ítem** (`loot.whitelist`): ítems (id o nombre) que se recogen
+  **aunque el loot esté desactivado**. El agente reporta los ítems de cada cuerpo
+  (`defeated[].items`, vía `tileItems`); con el loot off solo se lootean los
+  cuerpos que contienen un ítem de la lista. Editable en la GUI (tarjeta *Loot*).
+  Vacío = recoger todo (con el loot activado).
 - **Primero pelear**: el loot **cede mientras haya enemigos atacables en
   pantalla** (y al revive). Es la **última acción antes de seguir la ruta** —
   antes tenía prioridad 88 (> combat 70) y looteaba a media pelea, dejando al
@@ -281,6 +298,13 @@ Condiciones para revivir (resetear cooldowns / revivir):
 | **D** | `in_range > 0`, sin stun, con skills listas | — | **no revive** (sigue casteando) |
 
 Extras:
+- **Tiempo de combo** (`revive.combo_time`, editable en la GUI, tarjeta
+  *Revive*): segundos mínimos desde la **primera skill** del ciclo antes de
+  permitir el revive. Sirve para **no cortar la animación** de las skills (si se
+  revive antes de que terminen, esa skill no llega a hacer daño). Mientras no se
+  cumple, los casos A/B/C **no** disparan; el Pokémon debilitado (`dead`) lo
+  ignora. El reloj arranca con la primera skill (`combo_start`), se reinicia al
+  completar el revive y cuando el combo vuelve a estar listo. `0` = desactivado.
 - **Sin revives → desconectar** (`revive.disconnect_when_out`): al llegar a **0
   revives** (ítem `revive.item`, por defecto 2269), el bot pulsa la tecla de
   logout (`revive.logout_key`, F12), pausa y **se detiene**. Cuenta los revives
@@ -336,7 +360,16 @@ sin cursor) → sacar (call slot)**. El **primer** revive de la sesión espera
   trabaja con él. Si no hay nombre, usa el slot guardado. La selección se guarda
   por ruta (control y rutas con nombre).
 - **Densificada** (`route.densify`): al cargar la ruta, cada tramo se sustituye
-  por el **camino real sobre el otmm** (astar), para que siga el corredor.
+  por el **camino real sobre el otmm** (astar), para que siga el corredor. Los
+  tramos que **cruzan de piso** NO se densifican (el camino real solo existe en un
+  piso).
+- **Cambio de piso (subir/bajar)**: un waypoint puede marcarse con una **acción**
+  (`[x, y, z, "up"|"down"]`), que se pone en la **casilla de la escalera del piso
+  actual**. El bot navega a esa casilla y **espera a que cambie la z** al pisarla
+  (el cliente cambia de piso al caminar encima); solo entonces avanza. Si no
+  cambia en `transition_timeout_secs` (12 s), reintenta y acaba saltando. En la
+  GUI se elige el tipo del próximo punto (*normal* / *subir* / *bajar*) al dibujar
+  la ruta; se dibujan con flecha ↑/↓.
 - **Segmentación por camino real**: el objetivo de navegación se calcula con
   **astar sobre otmm** (no en línea recta), así no se da la vuelta al cruzar el
   eje de un waypoint.
@@ -498,15 +531,29 @@ Así se evitan "cuerpos falsos" (criaturas que se alejan de la vista).
 
 ## 11. Shiny / captura
 
+- **Emblema de shiny (`skull`)**: en PXG los **shinies salvajes** llevan un
+  emblema en el nombre que el cliente manda en el slot `skull`, con un valor fijo
+  (**55**) sea cual sea la especie (los normales van a 0; los jugadores usan
+  `skull` para el clan, 50–88). La detección es **exacta**: `skull == 55` → shiny
+  (config `shiny.skull`, editable en la GUI, tarjeta *Captura*). Poner `0` vuelve
+  al heurístico de outfit.
 - `pxg_bot/shiny.py`: tabla persistente `nombre → outfit normal` (el más
-  observado). Una criatura con outfit distinto se marca `shiny`.
-  - **No cuenta el summon propio** (`is_summon`) ni duplica por tick (dedupe por
-    instancia), para no invertir la tabla.
+  observado). Una criatura con outfit distinto se marca `shiny`. **Solo se usa si
+  `shiny.skull = 0`** (respaldo).
+  - **No cuenta el summon propio** (`is_summon`, del campo `ownsummon` del
+    agente) ni duplica por tick (dedupe por instancia), para no invertir la tabla.
+  - **Conservador**: no marca nada si el "normal" aún no es fiable (`min_obs`, 5
+    muestras) o si la especie tiene **variantes ambiguas** (un segundo outfit con
+    conteo significativo) — así no avisa en falso (p. ej. Fearow con 4 muestras).
 - `capture` lanza la ball a los cuerpos shiny o a todos si `capture.catch_all`.
   **Filtro por nombre**: `capture.names` (lista blanca; si tiene nombres, **solo**
   a esos se lanza, aunque no sean shiny) y `capture.exclude` (lista negra; gana
   sobre `names`). Editable en la GUI (tarjeta *Captura*); comparación sin
   mayúsculas.
+  **`capture.stop_on_capture`** (toggle *"Dejar de lanzar balls al capturar el
+  Pokémon"*, por defecto **off**): al confirmarse la captura, deja de lanzar balls
+  a ese cuerpo (no gasta balls de más en uno ya capturado). Usa el contador del
+  bot (`capture_stop_at`), robusto aunque captura ceda el turno ante enemigos.
   `capture.range` (4): lanza desde **≤ 4 tiles**; si el cuerpo está más lejos, se
   acerca primero (antes estaba en 1, ahora puede lanzar desde 4).
 - La ball se lanza **por Lua**: `ball <itemId> x y z` obtiene el `Thing` del
@@ -573,18 +620,21 @@ Pestañas y tarjetas:
 - **Combate**: lure/objetivo, casteo (skill lista %, intervalo, "todos a rango"),
   **Buff** (enemigos mínimos y **gate**: en pantalla / todos a rango / gate de
   combate) y **Pánico** (%, fuente de vida y skills).
-- **Loot**: alcance, enemigo cerca, cadencia de recogida, gracia, atasco,
-  reenvío y fase.
-- **Captura** (pestaña propia): **Captura (balls)** — ítem, rango de lanzamiento
-  y filtro `names`/`exclude` por nombre (y *catch_all*).
+- **Loot**: alcance, enemigo cerca, cadencia de recogida, **whitelist de ítems**
+  (se recogen aunque el loot esté off), gracia, atasco, reenvío y fase.
+- **Captura** (pestaña propia): **Captura (balls)** — ítem, rango de lanzamiento,
+  filtro `names`/`exclude` por nombre, *catch_all* y el toggle *"Dejar de lanzar
+  balls al capturar el Pokémon"*.
 - **Equipo**: slots con HP y activo, y selector del Pokémon de la ruta (se saca
-  al iniciarla); **Revive** (slot, ítem, sin-revives → logout, tecla).
+  al iniciarla); **Revive** (slot, ítem, tiempo de combo, sin-revives → logout,
+  tecla).
 - **Skills** (pestaña propia): **Skills rápidas** (clic = lanzar la skill) y
   **Skills / combo del lure** (orden por Pokémon + skills marcadas para cada
   lure, con **✕** para borrar del catálogo; el Pokémon activo se resalta y no se
   puede borrar).
 - **Ruta**: mapa real (base otmm, pan/zoom, transitabilidad y editor de ruta;
-  la paleta es la **real del cliente**, cubo 6×6×6), **Idle de inicio** y
+  la paleta es la **real del cliente**, cubo 6×6×6; al dibujar se elige el tipo
+  del punto: *normal*, *subir* o *bajar* de piso), **Idle de inicio** y
   **Exploración** (punto de partida, radio, patrullar).
 - **Recuperación** (pestaña propia): **Recuperación** (activar, cerrar ventana de
   muerte, personaje a reconectar, slot del Pokémon con Teleport, región/destino y
@@ -595,7 +645,10 @@ Pestañas y tarjetas:
 - **Telegram**: avisos al móvil — activar/desactivar, token y chat id, qué
   eventos avisar (muerte, jugador, shiny, captura, sin revives, desconexión),
   rango de jugador y botón *Enviar prueba* (ver §24).
-- **Registro**: log del bot.
+- **Registro**: log del bot. Con **rotación por tamaño** (`ui.log_max_mb`, def.
+  20 MB → `pxg_bot.log.1`) y botón **vaciar**. La pestaña lee solo el **final** del
+  fichero, así un log grande no la bloquea. `settings.log_every` (def. 1) imprime
+  la línea de tick cada N ticks (súbelo para generar menos log).
 
 El panel lee la `party` del estado **en tiempo real** (slots con HP y flag de
 activo) para el selector de Pokémon. El cliente no expone el nombre por slot:
@@ -629,6 +682,7 @@ sobreescribe. La GUI edita `config.json` y el canal de control
 | `pxg_control.json` | Control en caliente (pausa, toggles, ruta, combate…). |
 | `pxg_bot_status.json` | Estado del bot (behavior elegido, uptime…). |
 | `pxg_bot.pid` | PID del bot. |
+| `pxg_bot_seen.json` | Contadores "ya avisados" (capturas) para no reenviar avisos al reiniciar. |
 | `pxg_bot_ui.txt` | Petición del botón in-game (`start`/`stop`/`toggle`); la GUI la consume. |
 | `pxg_world.json` | Mapa explorado / cobertura. |
 | `pxg_shiny.json` | Tabla nombre→outfit normal. |
@@ -957,7 +1011,11 @@ el bot funciona igual.
   (0.05 s) nunca se bloquea por la red. Al cerrar el bot se **drena** la cola,
   para no perder avisos como el de "sin revives".
 - **Anti-spam**: cada evento tiene *cooldown* y dedupe por clave (el mismo
-  jugador/shiny no repite dentro del intervalo).
+  jugador no repite dentro del intervalo). El **shiny** avisa **una vez por
+  criatura** mientras está en pantalla (se rearma al desaparecer), para no repetir
+  cada pocos segundos. La **captura** no se reenvía al **reiniciar el bot**: el
+  contador de capturas ya notificadas se persiste (`pxg_bot_seen.json`) y solo se
+  avisa del delta nuevo.
 - **Sin dependencias**: usa `urllib.request` de la stdlib contra la Bot API
   (`https://api.telegram.org/bot<token>/sendMessage`).
 
@@ -1039,3 +1097,41 @@ Comandos (**aliases es / en / pt**):
 | `language` | `es` | Idioma por defecto de las respuestas. |
 | `poll_timeout` | `25` | Segundos del long-poll. |
 | `confirm_destructive` | `true` | Pedir confirmación en stop/pánico. |
+
+---
+
+## 25. Avisos por WhatsApp (`pxg_bot/whatsapp.py`, opcional)
+
+Canal **extra** de avisos (en paralelo con Telegram), solo **salida**, sin
+dependencias (stdlib `urllib`). Recibe los **mismos eventos** que Telegram (muerte,
+jugador cerca, shiny, captura, sin revives, desconexión). Dos proveedores:
+
+- **Meta WhatsApp Cloud API** (oficial, `provider: "meta"`): `POST
+  graph.facebook.com/<v>/<phone_number_id>/messages` con `Bearer <token>`. Necesita
+  una app de Meta con un número de WhatsApp; se copian el **access token** y el
+  **phone number id**. **Ojo**: solo deja enviar **texto libre** dentro de la
+  **ventana de 24 h** tras el último mensaje del destinatario al número; fuera de
+  ella habría que usar **plantillas** aprobadas.
+- **CallMeBot** (no oficial, `provider: "callmebot"`): GET simple con una API key.
+  Setup: envía *"I allow callmebot to send me messages"* al **+34 644 51 95 23** y
+  recibirás tu **API key**.
+
+Ambos son **unidireccionales** y con límite de frecuencia (los *cooldowns*/dedupe
+evitan spam). Los mensajes van en **texto plano** (el `<b>` se convierte a
+`*negrita*`). **Sin comandos entrantes** (para control usa Telegram). El canal se
+integra con `Notifier`/`Notifiers` (`notify.py`), que reparte los eventos a
+Telegram **y** WhatsApp. Todo editable en la GUI (pestaña *WhatsApp*).
+
+### Configuración (`config.json` → `whatsapp`)
+
+| Clave | Def. | Qué hace |
+|---|---|---|
+| `enabled` | `false` | Activa los avisos. |
+| `provider` | `meta` | `meta` (Cloud API) o `callmebot`. |
+| `phone` | `""` | Destino, formato internacional (`+34…`). |
+| `token` | `""` | Access token (Meta). |
+| `phone_number_id` | `""` | Id del número emisor (Meta). |
+| `api_version` | `v21.0` | Versión de la Graph API (Meta). |
+| `apikey` | `""` | API key de CallMeBot. |
+| `player_range` | `7` | Tiles a los que avisa de otro jugador. |
+| `events` / `cooldowns` | — | Igual que en Telegram (§24). |
