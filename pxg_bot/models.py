@@ -174,6 +174,15 @@ class GameState:
     pokemon_pos: Optional[tuple] = None
     pokemon_hp: Optional[int] = None
     timestamp: float = 0.0
+    # recuperacion (muerte / reconexion / teleport)
+    dead: bool = False
+    online: bool = False
+    conn_ok: bool = False
+    death_window: bool = False
+    has_teleport: bool = False
+    can_teleport: bool = False
+    selector: bool = False
+    in_combat: bool = False
 
     def creature(self, cid: int) -> Optional[Creature]:
         for c in self.creatures:

@@ -42,6 +42,14 @@ DEFAULT_TELEGRAM = {
         "revives_out": 60.0,
         "disconnect": 30.0,
     },
+    "commands": {
+        "enabled": False,
+        "allowed_chat_ids": [],
+        "allowed_user_ids": [],
+        "language": "es",
+        "poll_timeout": 25,
+        "confirm_destructive": True,
+    },
 }
 
 # (clave, etiqueta) para la GUI.
@@ -56,7 +64,8 @@ EVENTS = [
 
 
 def send_message(token: str, chat_id: str, text: str,
-                 parse_mode: str = "HTML", timeout: float = 10.0):
+                 parse_mode: str = "HTML", timeout: float = 10.0,
+                 reply_markup=None):
     """Envia un mensaje por la Bot API. Devuelve (ok, error)."""
     if not token or not chat_id:
         return False, "falta bot_token o chat_id"
@@ -68,6 +77,9 @@ def send_message(token: str, chat_id: str, text: str,
     }
     if parse_mode:
         payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = (reply_markup if isinstance(reply_markup, str)
+                                   else json.dumps(reply_markup))
     data = urllib.parse.urlencode(payload).encode("utf-8")
     try:
         req = urllib.request.Request(url, data=data)
@@ -77,6 +89,46 @@ def send_message(token: str, chat_id: str, text: str,
         return False, "%s: %s" % (type(exc).__name__, exc)
     try:
         parsed = json.loads(body)
+    except ValueError:
+        return True, ""
+    if parsed.get("ok"):
+        return True, ""
+    return False, str(parsed.get("description") or "error")
+
+
+def send_photo(token: str, chat_id: str, photo: bytes, filename: str = "screen.png",
+               caption: str = "", parse_mode: str = "HTML", timeout: float = 30.0):
+    """Envia una foto (multipart) por la Bot API. Devuelve (ok, error)."""
+    if not token or not chat_id:
+        return False, "falta bot_token o chat_id"
+    if not photo:
+        return False, "sin imagen"
+    boundary = "----dkbot%d" % int(time.time() * 1000)
+    parts = []
+
+    def field(name: str, value: str) -> None:
+        parts.append(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
+                      % (boundary, name, value)).encode("utf-8"))
+
+    field("chat_id", str(chat_id))
+    if caption:
+        field("caption", caption)
+    if parse_mode:
+        field("parse_mode", parse_mode)
+    head = ("--%s\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"%s\"\r\n"
+            "Content-Type: image/png\r\n\r\n" % (boundary, filename)).encode("utf-8")
+    body = b"".join(parts) + head + photo + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+    url = "https://api.telegram.org/bot%s/sendPhoto" % token
+    try:
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "ignore")
+    except Exception as exc:
+        return False, "%s: %s" % (type(exc).__name__, exc)
+    try:
+        parsed = json.loads(raw)
     except ValueError:
         return True, ""
     if parsed.get("ok"):

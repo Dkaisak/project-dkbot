@@ -91,7 +91,10 @@ class LuaStateSource:
         if self.ignore is not None:
             self.ignore.maybe_reload()
         if not data or not data.get("connected", False):
-            return GameState(player=Player(), connected=False, timestamp=time.time())
+            return GameState(player=Player(), connected=False, timestamp=time.time(),
+                             online=bool(data.get("online", False)),
+                             conn_ok=bool(data.get("conn_ok", False)),
+                             selector=bool(data.get("selector", False)))
 
         player = Player(
             name=data.get("name", ""),
@@ -250,6 +253,13 @@ class LuaStateSource:
         state.pokemon_pos = (int(pp["x"]), int(pp["y"]), int(pp["z"])) if pp else None
         ph = data.get("pokemon_hp")
         state.pokemon_hp = int(ph) if isinstance(ph, (int, float)) else None
+        state.dead = bool(data.get("dead", False))
+        state.online = bool(data.get("online", False))
+        state.conn_ok = bool(data.get("conn_ok", False))
+        state.death_window = bool(data.get("death_window", False))
+        state.has_teleport = bool(data.get("has_teleport", False))
+        state.can_teleport = bool(data.get("can_teleport", False))
+        state.in_combat = bool(data.get("in_combat", False))
         state.connected = True
         return state
 
@@ -350,4 +360,44 @@ class LuaInput(BaseInput):
         # resuelve por coordenadas (tileToScreen + getMapThingByMousePosition),
         # SIN mover el cursor fisico -> no necesita X11.
         self.bridge.send(f"order {int(target.x)} {int(target.y)} {int(target.z)}")
+
+    def open_game(self, name: str = "") -> None:
+        # reconecta desde el selector de personajes (elige el personaje)
+        line = "opengame"
+        if name:
+            line += " " + str(name)
+        self.bridge.send(line)
+
+    def dismiss_death(self) -> None:
+        # cierra la ventana de muerte (sin recuperar)
+        self.bridge.send("deathdismiss")
+
+    def teleport(self, destination: str) -> None:
+        # habilidad Teleport por chat: h"<destino> (requiere el pokemon fuera)
+        self.bridge.send(f"teleport {destination}")
+
+    def left_click(self, target: Vec3) -> None:
+        # clic izquierdo en un tile (p. ej. usar/pisar una escalera)
+        self.bridge.send(f"lclick {int(target.x)} {int(target.y)} {int(target.z)}")
+
+    def fly(self, slot=None) -> None:
+        # entra en modo vuelo (orderonself con un pokemon volador fuera)
+        line = "fly"
+        if slot:
+            line += " " + str(int(slot))
+        self.bridge.send(line)
+
+    def fly_up(self) -> None:
+        self.bridge.send("flyup")
+
+    def fly_down(self) -> None:
+        self.bridge.send("flydown")
+
+    def fly_to(self, z: int) -> None:
+        # sube/baja en vuelo hasta el z objetivo (agente: repite flyup/flydown)
+        self.bridge.send(f"flyto {int(z)}")
+
+    def order_self(self) -> None:
+        # ordena el ownsummon sobre el personaje (toggle de vuelo / desmontar)
+        self.bridge.send("orderonself")
 

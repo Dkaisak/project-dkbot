@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -1528,6 +1530,388 @@ class ReviveBehavior(Behavior):
             self._revives_done += 1
 
 
+class RecoveryBehavior(Behavior):
+    """Reconexion (siempre el mismo personaje) y recuperacion tras muerte.
+
+    Flujo: al morir -> cierra la ventana de muerte (sin recuperar), espera el
+    respawn, usa la habilidad **Teleport** (un pokemon del equipo, p. ej. Abra)
+    para volver a la zona y sigue una **ruta de recall** grabada por el usuario
+    hasta el **inicio de la ruta activa**, donde reanuda el farmeo.
+
+    Prioridad por encima de crisis: mientras dura la recuperacion preempta todo.
+    """
+
+    name = "recovery"
+    priority = 101
+
+    def __init__(self, cfg: dict, settings: dict, route: Optional[Route] = None,
+                 world=None, routes_file: str = ""):
+        super().__init__(cfg, settings)
+        self.route = route
+        self.world = world
+        self.routes_file = routes_file or ""
+        self.locations_file = (os.path.join(os.path.dirname(routes_file), "pxg_locations.json")
+                               if routes_file else "")
+        self._recall: Optional[Route] = None
+
+    # --- deteccion ---
+    @staticmethod
+    def _is_dead(state: GameState) -> bool:
+        return bool(getattr(state, "dead", False) or getattr(state, "death_window", False))
+
+    def evaluate(self, state: GameState, bb: Blackboard) -> bool:
+        if bb.paused or not self.cfg.get("enabled", True):
+            return False
+        if not getattr(state, "connected", False):
+            return True
+        if bb.notes.get("rec_st") in ("dead", "teleport", "recall",
+                                      "fly_up", "fly_move", "fly_down", "fly_off"):
+            return True
+        return self._is_dead(state)
+
+    # --- ruta de recall ---
+    def _load_recall(self, name: str) -> Optional[Route]:
+        if not name or not self.routes_file or not os.path.exists(self.routes_file):
+            return None
+        try:
+            with open(self.routes_file, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        routes = data.get("routes", {}) if isinstance(data, dict) else {}
+        entry = routes.get(name)
+        if not entry or not entry.get("waypoints"):
+            return None
+        try:
+            return Route.from_config(entry["waypoints"], loop=False)
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    # --- ubicacion de teleport mas cercana (ciudad) ---
+    def _nearest_location(self):
+        """Ubicacion de teleport (region, name, dist) mas cercana al inicio de la ruta."""
+        if self.route is None or not self.route.waypoints:
+            return None
+        w = self.route.waypoints[0]
+        path = self.locations_file
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                locs = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        best = None
+        best_d = 1 << 30
+        for loc in locs or []:
+            try:
+                d = max(abs(int(loc["x"]) - w.x), abs(int(loc["y"]) - w.y))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if d < best_d:
+                best_d = d
+                best = loc
+        if best is None:
+            return None
+        return {"region": str(best.get("region", "")), "name": str(best.get("name", "")),
+                "x": best.get("x"), "y": best.get("y"), "dist": best_d}
+
+    # --- fly ---
+    def _fly_slot(self):
+        slot = (self.cfg.get("fly", {}) or {}).get("pokemon_slot")
+        try:
+            return int(slot) if slot else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_flying(state: GameState) -> bool:
+        # volando = hay pokemon activo pero su ownsummon no aparece (fusionado)
+        return bool(getattr(state, "active_pokemon_name", "")) and not getattr(state, "pokemon_pos", None)
+
+    def _fly_up(self, state: GameState, bb: Blackboard, inp, now: float) -> None:
+        if not self._is_flying(state):
+            if now - bb.notes.get("rec_fly_at", 0.0) > 2.0:
+                inp.fly(self._fly_slot())
+                bb.notes["rec_fly_at"] = now
+            return
+        if state.player.pos.z != 1:
+            if now - bb.notes.get("rec_flyto_at", 0.0) > 0.5:
+                inp.fly_to(1)
+                bb.notes["rec_flyto_at"] = now
+            return
+        bb.notes["rec_st"] = "fly_move"
+        bb.notes["rec_move_started"] = now
+        bb.notes.pop("rec_move_key", None)
+
+    def _fly_move(self, state: GameState, bb: Blackboard, inp, now: float) -> None:
+        if not self._is_flying(state):
+            bb.notes["rec_st"] = "fly_up"
+            return
+        if self.route is None or not self.route.waypoints:
+            self._finish(bb)
+            return
+        w = self.route.waypoints[0]
+        p = state.player.pos
+        if max(abs(p.x - w.x), abs(p.y - w.y)) <= 2:
+            bb.notes["rec_st"] = "fly_down"
+            bb.notes.pop("rec_flyto_at", None)
+            return
+        key = (w.x, w.y)
+        if (bb.notes.get("rec_move_key") != key
+                or (not state.is_walking and now - bb.notes.get("rec_move_at", 0.0) > 1.0)):
+            inp.walk_to(Vec3(w.x, w.y, 1))
+            bb.notes["rec_move_key"] = key
+            bb.notes["rec_move_at"] = now
+        if now - bb.notes.get("rec_move_started", now) > float(self.cfg.get("fly_move_timeout_secs", 180.0)):
+            self._finish(bb)
+
+    def _fly_down(self, state: GameState, bb: Blackboard, inp, now: float) -> None:
+        if self.route is None or not self.route.waypoints:
+            self._finish(bb)
+            return
+        z = self.route.waypoints[0].z
+        if state.player.pos.z != z:
+            if now - bb.notes.get("rec_flyto_at", 0.0) > 0.5:
+                inp.fly_to(z)
+                bb.notes["rec_flyto_at"] = now
+            return
+        bb.notes["rec_st"] = "fly_off"
+        bb.notes.pop("rec_off_at", None)
+
+    def _fly_off(self, state: GameState, bb: Blackboard, inp, now: float) -> None:
+        if not self._is_flying(state):
+            self._finish(bb)
+            return
+        if now - bb.notes.get("rec_off_at", 0.0) > 1.5:
+            inp.order_self()
+            bb.notes["rec_off_at"] = now
+
+    # --- transiciones ---
+    def _enter_dead(self, state: GameState, bb: Blackboard, inp) -> None:
+        bb.notes["rec_st"] = "dead"
+        bb.notes["rec_death_at"] = time.time()
+        w0 = None
+        if self.route is not None and self.route.waypoints:
+            w = self.route.waypoints[0]
+            w0 = (w.x, w.y, w.z)
+        bb.notes["rec_route_start"] = w0
+        # pokemon de farmeo que estaba fuera (para volver a sacarlo tras teleportar)
+        bb.notes["rec_farm_slot"] = self._active_slot(state)
+        # ciudad de teleport mas cercana al inicio de la ruta (region + nombre)
+        bb.notes["rec_dest"] = self._nearest_location()
+        for key in ("rec_teleport_sent", "rec_teleport_from", "rec_recall_idx",
+                    "rec_recall_sent", "rec_recall_best", "rec_recall_best_at",
+                    "rec_respawn_at", "rec_recall_started", "rec_flyto_at",
+                    "rec_move_key", "rec_move_at", "rec_move_started", "rec_off_at"):
+            bb.notes.pop(key, None)
+        if self.cfg.get("dismiss_death_window", True):
+            inp.dismiss_death()
+            bb.notes["rec_dismiss_at"] = time.time()
+
+    def _finish(self, bb: Blackboard) -> None:
+        bb.notes["rec_st"] = "normal"
+        for key in ("rec_teleport_sent", "rec_teleport_from", "rec_recall_idx",
+                    "rec_recall_sent", "rec_recall_best", "rec_recall_best_at",
+                    "rec_respawn_at", "rec_recall_started", "rec_fly_at",
+                    "rec_flyto_at", "rec_move_key", "rec_move_at", "rec_move_started",
+                    "rec_off_at"):
+            bb.notes.pop(key, None)
+        self._recall = None
+        if self.route is not None:
+            self.route.index = 0
+            self.route.forward = True
+        # que la ruta vuelva a sacar su pokemon al reanudar
+        bb.notes["route_recall_call"] = True
+
+    # --- ciclo ---
+    def act(self, state: GameState, bb: Blackboard, inp) -> None:
+        now = time.time()
+        if getattr(state, "connected", False) and state.player.name:
+            bb.notes["last_character"] = state.player.name
+
+        if not getattr(state, "connected", False):
+            self._reconnect(state, bb, inp, now)
+            return
+
+        st = bb.notes.get("rec_st", "normal")
+        if st == "dead":
+            self._dead(state, bb, inp, now)
+        elif st == "teleport":
+            self._teleport(state, bb, inp, now)
+        elif st == "recall":
+            self._recall_step(state, bb, inp, now)
+        elif st == "fly_up":
+            self._fly_up(state, bb, inp, now)
+        elif st == "fly_move":
+            self._fly_move(state, bb, inp, now)
+        elif st == "fly_down":
+            self._fly_down(state, bb, inp, now)
+        elif st == "fly_off":
+            self._fly_off(state, bb, inp, now)
+        elif self._is_dead(state):
+            self._enter_dead(state, bb, inp)
+
+    # --- reconexion (mismo personaje) ---
+    def _reconnect(self, state: GameState, bb: Blackboard, inp, now: float) -> None:
+        selector = getattr(state, "selector", False)
+        online = getattr(state, "online", False)
+        # cargando (online pero sin jugador): no spamear
+        if online and not selector:
+            return
+        if now - bb.notes.get("rec_reconnect_at", 0.0) < float(self.cfg.get("retry_secs", 5.0)):
+            return
+        bb.notes["rec_reconnect_at"] = now
+        name = str(self.cfg.get("character", "") or "") or str(bb.notes.get("last_character", "") or "")
+        inp.open_game(name)
+        # si estabamos recuperando, tras reconectar se reintenta el teleport
+        if bb.notes.get("rec_st") in ("dead", "teleport", "recall"):
+            bb.notes["rec_st"] = "teleport"
+            bb.notes["rec_respawn_at"] = now
+            bb.notes.pop("rec_teleport_sent", None)
+
+    # --- muerte ---
+    def _dead(self, state: GameState, bb: Blackboard, inp, now: float) -> None:
+        if self.cfg.get("dismiss_death_window", True) and getattr(state, "death_window", False):
+            if now - bb.notes.get("rec_dismiss_at", 0.0) > 1.0:
+                inp.dismiss_death()
+                bb.notes["rec_dismiss_at"] = now
+        if self._is_dead(state):
+            return
+        # respawn: vivo de nuevo -> teleport
+        bb.notes["rec_respawn_at"] = now
+        bb.notes["rec_st"] = "teleport"
+        bb.notes["rec_teleport_sent"] = 0.0
+
+    # --- teleport ---
+    def _teleport_slot(self):
+        slot = (self.cfg.get("teleport", {}) or {}).get("pokemon_slot")
+        try:
+            return int(slot) if slot else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _active_slot(state: GameState):
+        for p in state.party:
+            if getattr(p, "active", False):
+                return int(p.slot)
+        return None
+
+    @staticmethod
+    def _slot_active(state: GameState, slot) -> bool:
+        for p in state.party:
+            if int(p.slot) == int(slot):
+                return bool(p.active)
+        return False
+
+    def _restore_farm_pokemon(self, bb: Blackboard, inp) -> None:
+        slot = bb.notes.get("rec_farm_slot")
+        if slot:
+            inp.call_slot(int(slot))
+
+    def _teleport(self, state: GameState, bb: Blackboard, inp, now: float) -> None:
+        tcfg = self.cfg.get("teleport", {}) or {}
+        if not tcfg.get("enabled", True):
+            self._after_teleport(state, bb, inp)
+            return
+        # 1) sacar al pokemon con la habilidad Teleport (si hay uno configurado)
+        tp_slot = self._teleport_slot()
+        if tp_slot and not self._slot_active(state, tp_slot):
+            if now - bb.notes.get("rec_call_at", 0.0) > 1.0:
+                inp.call_slot(tp_slot)
+                bb.notes["rec_call_at"] = now
+            return
+        # 2) teleportar (por chat: h"<destino>): ciudad mas cercana (auto) o config
+        sent = bb.notes.get("rec_teleport_sent", 0.0)
+        if sent:
+            fx, fy, fz = bb.notes.get("rec_teleport_from", (0, 0, 0))
+            if state.player.pos.distance(Vec3(fx, fy, fz)) >= 5 or state.player.pos.z != fz:
+                self._after_teleport(state, bb, inp)
+                return
+            if now - sent <= 15.0:
+                return  # esperar a que se aplique el teleport
+            bb.notes["rec_teleport_sent"] = 0.0  # no funciono: reintentar
+        if getattr(state, "can_teleport", False):
+            dest = ""
+            rec_dest = bb.notes.get("rec_dest") or {}
+            if str(self.cfg.get("travel_method", "auto")).lower() != "recall":
+                dest = str(rec_dest.get("name", "") or "")
+            if not dest:
+                dest = str(tcfg.get("destination", "") or "")
+            if dest:
+                inp.teleport(dest)
+                bb.notes["rec_teleport_sent"] = now
+                bb.notes["rec_teleport_from"] = (state.player.pos.x, state.player.pos.y,
+                                                 state.player.pos.z)
+                return
+        if now - bb.notes.get("rec_respawn_at", now) > float(self.cfg.get("teleport_timeout_secs", 240.0)):
+            self._after_teleport(state, bb, inp)
+
+    def _after_teleport(self, state: GameState, bb: Blackboard, inp) -> None:
+        """Decide el metodo de vuelta tras teleportar: Outland (no se puede volar)
+        -> ruta de recall; si no -> fly (subir, volar, bajar, desmontar)."""
+        rec_dest = bb.notes.get("rec_dest") or {}
+        region = str(rec_dest.get("region", "")).lower()
+        method = str(self.cfg.get("travel_method", "auto")).lower()
+        if method == "recall" or (method == "auto" and region == "outland"):
+            self._restore_farm_pokemon(bb, inp)
+            self._start_recall(state, bb)
+        else:
+            bb.notes["rec_st"] = "fly_up"
+            bb.notes.pop("rec_fly_at", None)
+
+    def _start_recall(self, state: GameState, bb: Blackboard) -> None:
+        bb.notes["rec_st"] = "recall"
+        bb.notes["rec_recall_idx"] = 0
+        bb.notes["rec_recall_started"] = time.time()
+        bb.notes.pop("rec_recall_sent", None)
+        bb.notes.pop("rec_recall_best", None)
+        name = str((self.cfg.get("teleport", {}) or {}).get("recall_route", "") or "")
+        self._recall = self._load_recall(name)
+
+    # --- recall (vuelta al inicio de la ruta, multi-piso) ---
+    def _recall_step(self, state: GameState, bb: Blackboard, inp, now: float) -> None:
+        route = self._recall
+        if route is None or not route.waypoints:
+            self._finish(bb)
+            return
+        idx = int(bb.notes.get("rec_recall_idx", 0))
+        if idx >= len(route.waypoints):
+            self._finish(bb)
+            return
+        wp = route.waypoints[idx]
+        p = state.player.pos
+        arrive = int(self.cfg.get("recall_arrive_distance", 1))
+        if max(abs(p.x - wp.x), abs(p.y - wp.y)) <= arrive and p.z == wp.z:
+            bb.notes["rec_recall_idx"] = idx + 1
+            bb.notes.pop("rec_recall_sent", None)
+            bb.notes.pop("rec_recall_best", None)
+            return
+        # si el waypoint esta en otro piso, caminar a su (x,y) en el piso actual:
+        # al pisar la escalera el cliente cambia la z y se llega al waypoint.
+        goal = Vec3(wp.x, wp.y, p.z)
+        d = max(abs(p.x - goal.x), abs(p.y - goal.y))
+        key = (goal.x, goal.y, goal.z)
+        if bb.notes.get("rec_recall_sent") != key or (
+            not state.is_walking and now - bb.notes.get("rec_recall_at", 0.0) > 0.6
+        ):
+            inp.walk_to(goal)
+            bb.notes["rec_recall_sent"] = key
+            bb.notes["rec_recall_at"] = now
+        best = bb.notes.get("rec_recall_best")
+        if best is None or d < best:
+            bb.notes["rec_recall_best"] = d
+            bb.notes["rec_recall_best_at"] = now
+        elif now - bb.notes.get("rec_recall_best_at", now) > 2.5:
+            # atascado y el waypoint es de otro piso -> intentar usar la escalera
+            if wp.z != p.z:
+                inp.left_click(goal)
+            bb.notes["rec_recall_best_at"] = now
+        if now - bb.notes.get("rec_recall_started", now) > float(self.cfg.get("recall_timeout_secs", 180.0)):
+            self._finish(bb)
+
+
 def make_walkable(state: GameState, static_map: Optional[list] = None):
     if static_map:
         rows = static_map
@@ -1669,6 +2053,8 @@ class RouteBehavior(Behavior):
         return Vec3(gx, gy, final.z)
 
     def act(self, state: GameState, bb: Blackboard, inp) -> None:
+        if bb.notes.pop("route_recall_call", False):
+            self._pending_call = True
         if self._pending_call:
             self._use_pokemon(state, bb, inp)
             return
@@ -1679,7 +2065,12 @@ class RouteBehavior(Behavior):
         waypoint = self.route.current
         arrive = int(self.cfg.get("arrive_distance", 1))
         pos = (state.player.pos.x, state.player.pos.y)
-        if state.player.pos.distance(waypoint) <= arrive:
+        pz = state.player.pos.z
+        cross_z = waypoint.z != pz
+        # multi-piso: si el waypoint esta en otro piso, "llegar" = estar en su (x,y)
+        near_xy = max(abs(state.player.pos.x - waypoint.x),
+                      abs(state.player.pos.y - waypoint.y)) <= arrive
+        if state.player.pos.distance(waypoint) <= arrive or (cross_z and near_xy):
             # al llegar al inicio del recorrido (waypoint 0) DESPUES del primer
             # loop, esperar 25-60 s (no en el arranque del bot)
             if (self.cfg.get("start_idle_enabled", True)
@@ -1707,11 +2098,12 @@ class RouteBehavior(Behavior):
             bb.notes["route_pos"] = pos
             bb.notes["route_since"] = now
             return
-        dist = state.player.pos.distance(waypoint)
+        nav_wp = waypoint if not cross_z else Vec3(waypoint.x, waypoint.y, pz)
+        dist = state.player.pos.distance(nav_wp)
         wp_key = (waypoint.x, waypoint.y, waypoint.z)
         if bb.notes.get("route_wp") != wp_key:
             bb.notes["route_wp"] = wp_key
-            dg = self._detour_goal(bb, waypoint, state.player.pos)
+            dg = self._detour_goal(bb, nav_wp, state.player.pos) if not cross_z else nav_wp
             bb.notes["route_final"] = (dg.x, dg.y, dg.z)
             bb.notes["route_best"] = dist
             bb.notes["route_best_at"] = now
@@ -1925,6 +2317,8 @@ def build_behaviors(cfg: dict, route: Optional[Route], world=None,
     behaviors_cfg = cfg.get("behaviors", {})
     settings = cfg.get("settings", {})
     behaviors: list[Behavior] = [
+        RecoveryBehavior(behaviors_cfg.get("recovery", {}), settings, route, world,
+                         routes_file=cfg.get("lua", {}).get("routes_file", "")),
         CrisisBehavior(behaviors_cfg.get("crisis", {}), settings),
         HealingBehavior(behaviors_cfg.get("healing", {}), settings),
         CaptureBehavior(behaviors_cfg.get("capture", {}), settings),

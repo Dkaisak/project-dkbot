@@ -496,6 +496,28 @@ async function loadLootConfig() {
   }
 }
 
+async function loadRecovery() {
+  const cfg = await api("/api/config");
+  const r = (cfg.behaviors && cfg.behaviors.recovery) || {};
+  const tp = r.teleport || {};
+  const set = (id, v) => { const el = document.getElementById(id); if (el != null && v != null) el.value = v; };
+  const chk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+  chk("rec-enabled", r.enabled !== false);
+  chk("rec-dismiss", r.dismiss_death_window !== false);
+  set("rec-travel", r.travel_method || "auto");
+  set("rec-character", r.character || "");
+  set("rec-retry", r.retry_secs != null ? r.retry_secs : 5);
+  chk("rec-tp-enabled", tp.enabled !== false);
+  set("rec-tp-slot", tp.pokemon_slot != null ? tp.pokemon_slot : 1);
+  const fl = r.fly || {};
+  set("rec-fly-slot", fl.pokemon_slot != null ? fl.pokemon_slot : 2);
+  set("rec-tp-region", tp.region || "");
+  set("rec-tp-dest", tp.destination || "");
+  set("rec-tp-recall", tp.recall_route || "");
+}
+
+function recPost(patch) { api("/api/control", "POST", { recovery: patch }); }
+
 async function loadProcess() {
   const cfg = await api("/api/config");
   const el = document.getElementById("process-name");
@@ -538,16 +560,26 @@ function tgPayload() {
     events[k] = c ? c.checked : true;
   }
   const en = document.getElementById("tg-enabled");
+  const _ids = (s) => (s || "").split(/[;,\s]+/).map((x) => x.trim()).filter(Boolean);
+  const cmdEn = document.getElementById("tg-cmd-enabled");
+  const cmdConfirm = document.getElementById("tg-cmd-confirm");
   return {
     enabled: en ? en.checked : false,
     bot_token: (val("tg-token") || "").trim(),
     chat_id: (val("tg-chat") || "").trim(),
     player_range: parseInt(val("tg-range"), 10) || 7,
     events,
+    commands: {
+      enabled: cmdEn ? cmdEn.checked : false,
+      allowed_chat_ids: _ids(val("tg-cmd-chats")),
+      allowed_user_ids: _ids(val("tg-cmd-users")),
+      language: val("tg-cmd-lang") || "es",
+      confirm_destructive: cmdConfirm ? cmdConfirm.checked : true,
+    },
   };
 }
 
-function renderTelegramStatus(st) {
+function renderTelegramStatus(st, cmds) {
   st = st || {};
   const s = document.getElementById("tg-state");
   if (s) s.textContent = st.enabled ? "ON" : (st.active ? "faltan datos" : "OFF");
@@ -556,6 +588,7 @@ function renderTelegramStatus(st) {
   const parts = [st.enabled ? "activo" : "inactivo"];
   if (st.sent != null) parts.push("enviados: " + st.sent);
   if (st.last_event) parts.push("último: " + st.last_event);
+  if (cmds) parts.push("comandos: " + (cmds.running ? "escuchando" : "parado"));
   if (st.error) parts.push("error: " + st.error);
   info.textContent = parts.join(" · ");
 }
@@ -571,7 +604,13 @@ async function loadTelegram() {
   set("tg-range", t.player_range != null ? t.player_range : 7);
   const ev = t.events || {};
   for (const [k, id] of TG_EVENTS) chk(id, ev[k] !== false);
-  renderTelegramStatus(r.status || {});
+  const cmds = t.commands || {};
+  chk("tg-cmd-enabled", cmds.enabled);
+  set("tg-cmd-chats", (cmds.allowed_chat_ids || []).join(", "));
+  set("tg-cmd-users", (cmds.allowed_user_ids || []).join(", "));
+  set("tg-cmd-lang", cmds.language || "es");
+  chk("tg-cmd-confirm", cmds.confirm_destructive !== false);
+  renderTelegramStatus(r.status || {}, r.commands || {});
 }
 
 async function saveTelegram() {
@@ -580,7 +619,7 @@ async function saveTelegram() {
 
 async function pollTelegram() {
   const r = await api("/api/telegram");
-  renderTelegramStatus(r.status || {});
+  renderTelegramStatus(r.status || {}, r.commands || {});
 }
 
 async function refreshRoutes() {
@@ -596,6 +635,15 @@ async function refreshRoutes() {
     sel.appendChild(opt);
   }
   if (cur && routes[cur]) sel.value = cur;
+  const dl = document.getElementById("recall-routes");
+  if (dl) {
+    dl.innerHTML = "";
+    for (const name of Object.keys(routes).sort()) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      dl.appendChild(opt);
+    }
+  }
 }
 
 let pskOrder = {};
@@ -928,7 +976,9 @@ function wire() {
   };
   const procDetect = document.getElementById("btn-proc-detect");
   if (procDetect) procDetect.onclick = detectProcesses;
-  const tgIds = ["tg-enabled", "tg-token", "tg-chat", "tg-range", ...TG_EVENTS.map((e) => e[1])];
+  const tgIds = ["tg-enabled", "tg-token", "tg-chat", "tg-range",
+                 "tg-cmd-enabled", "tg-cmd-chats", "tg-cmd-users", "tg-cmd-lang", "tg-cmd-confirm",
+                 ...TG_EVENTS.map((e) => e[1])];
   for (const id of tgIds) {
     const el = document.getElementById(id);
     if (el) el.onchange = saveTelegram;
@@ -1055,6 +1105,29 @@ function wire() {
     const n = parseInt(e.target.value, 10);
     if (n >= 0) api("/api/control", "POST", { route_behavior: { start_idle_seconds: n } });
   };
+  const recEl = (id) => document.getElementById(id);
+  if (recEl("rec-enabled")) {
+    recEl("rec-enabled").onchange = (e) => recPost({ enabled: e.target.checked });
+    recEl("rec-dismiss").onchange = (e) => recPost({ dismiss_death_window: e.target.checked });
+    recEl("rec-travel").onchange = (e) => recPost({ travel_method: e.target.value });
+    recEl("rec-character").onchange = (e) => recPost({ character: e.target.value.trim() });
+    recEl("rec-retry").onchange = (e) => {
+      const n = parseFloat(e.target.value);
+      if (!isNaN(n) && n > 0) recPost({ retry_secs: n });
+    };
+    recEl("rec-tp-enabled").onchange = (e) => recPost({ teleport: { enabled: e.target.checked } });
+    recEl("rec-tp-slot").onchange = (e) => {
+      const n = parseInt(e.target.value, 10);
+      if (n >= 1 && n <= 6) recPost({ teleport: { pokemon_slot: n } });
+    };
+    recEl("rec-fly-slot").onchange = (e) => {
+      const n = parseInt(e.target.value, 10);
+      if (n >= 1 && n <= 6) recPost({ fly: { pokemon_slot: n } });
+    };
+    recEl("rec-tp-region").onchange = (e) => recPost({ teleport: { region: e.target.value.trim() } });
+    recEl("rec-tp-dest").onchange = (e) => recPost({ teleport: { destination: e.target.value.trim() } });
+    recEl("rec-tp-recall").onchange = (e) => recPost({ teleport: { recall_route: e.target.value.trim() } });
+  }
   document.getElementById("btn-log-clear").onclick = (e) => {
     logAutoScroll = !logAutoScroll;
     e.target.textContent = logAutoScroll ? "auto-scroll" : "scroll off";
@@ -1067,6 +1140,7 @@ function wire() {
 
 wire();
 loadLootConfig();
+loadRecovery();
 loadProcess();
 loadTelegram();
 loadRouteIntoEditor();

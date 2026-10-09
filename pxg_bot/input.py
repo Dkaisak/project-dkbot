@@ -162,6 +162,33 @@ class BaseInput:
     def order(self, target: Vec3) -> None:
         pass
 
+    def open_game(self, name: str = "") -> None:
+        pass
+
+    def dismiss_death(self) -> None:
+        pass
+
+    def teleport(self, region: str, destination: str) -> None:
+        pass
+
+    def left_click(self, target: Vec3) -> None:
+        pass
+
+    def fly(self, slot=None) -> None:
+        pass
+
+    def fly_up(self) -> None:
+        pass
+
+    def fly_down(self) -> None:
+        pass
+
+    def fly_to(self, z: int) -> None:
+        pass
+
+    def order_self(self) -> None:
+        pass
+
     def set_fight_mode(self, mode: int) -> None:
         pass
 

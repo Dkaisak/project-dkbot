@@ -498,6 +498,262 @@ local function snapCreature(c)
   }
 end
 
+local function safeCall(fn)
+  local ok, r = pcall(fn)
+  if ok then return r end
+  return nil
+end
+
+-- Teleport pendiente (teleport <slot> <destino>): saca al pokemon con la
+-- habilidad y teletransporta (chat h"<destino>) en cuanto `canUseTeleport()`.
+local function advanceTeleport()
+  local tp = PXG_TP
+  if not tp then return end
+  local gp = modules and modules.game_pokemon
+  if not gp then PXG_TP = nil return end
+  if not (gp.hasPokemonWithTeleport and gp.hasPokemonWithTeleport()) then
+    PXG_TP = nil; PXG_LAST_TP = "no-pokemon"; return
+  end
+  local now = (g_clock and g_clock.millis and g_clock.millis()) or 0
+  if tp.slot then
+    local out = false
+    if gp.getPokemonWidgetByIndex and gp.isPokemonActive then
+      local w = gp.getPokemonWidgetByIndex(tp.slot)
+      if w and w.pokeId then
+        local ok, r = pcall(function() return gp.isPokemonActive(tonumber(w.pokeId)) end)
+        out = ok and r == true
+      end
+    end
+    if not out then
+      if not tp.called or (now - (tp.called or 0)) > 1500 then
+        pcall(function() gp.callPokemonByIndex(tp.slot) end)
+        tp.called = now
+      end
+      return
+    end
+  end
+  if gp.canUseTeleport and gp.canUseTeleport() then
+    pcall(function() g_game.talk('h"' .. tostring(tp.dest):lower()) end)
+    PXG_TP = nil; PXG_LAST_TP = "sent " .. tostring(tp.dest)
+    return
+  end
+  if tp.t and now - tp.t > 120000 then
+    PXG_TP = nil; PXG_LAST_TP = "timeout"
+  end
+end
+
+-- Enemigos (monstruos) dentro de la pantalla visible.
+local function enemiesOnScreen()
+  local lp = g_game.getLocalPlayer()
+  if not lp then return 0 end
+  local p = lp:getPosition()
+  if not p then return 0 end
+  local hw, hh = 21, 11
+  local mp = g_game.getMapPanel()
+  if mp then
+    local ok, vd = pcall(function() return mp:getVisibleDimension() end)
+    if ok and vd then
+      hw = math.floor((tonumber(vd.width) or 21) / 2)
+      hh = math.floor((tonumber(vd.height) or 11) / 2)
+    end
+  end
+  local n = 0
+  local center = (g_map.getCentralPosition and g_map.getCentralPosition()) or p
+  local ok, specs = pcall(g_map.getSpectators, g_map, center, false)
+  if ok and type(specs) == "table" then
+    for _, c in ipairs(specs) do
+      local okp, cp = pcall(function() return c:getPosition() end)
+      if okp and cp and math.abs(cp.x - p.x) <= hw and math.abs(cp.y - p.y) <= hh then
+        if isKind(c, "isMonster") and not isKind(c, "isPlayer") then
+          local hp = 100
+          local okh, h = pcall(function() return c:getHealthPercent() end)
+          if okh and type(h) == "number" then hp = h end
+          if hp > 0 then n = n + 1 end
+        end
+      end
+    end
+  end
+  return n
+end
+
+-- Pulsa una tecla sintetizada (fallback).
+local function pressKey(name)
+  local root = g_ui.getRootWidget()
+  local code = nil
+  if g_keyboard and g_keyboard.getKey then
+    local ok, c = pcall(function() return g_keyboard.getKey(name) end)
+    if ok and c and c ~= 0 then code = c end
+  end
+  if not code then return false end
+  -- 1) handler de hotkeys del cliente (como lo llama el dispatcher de input)
+  local hk = modules and modules.game_hotkeys
+  if hk and hk.onKeyDown then pcall(function() hk.onKeyDown(code, 0) end) end
+  if hk and hk.onKeyUp then pcall(function() hk.onKeyUp(code, 0) end) end
+  -- 2) arbol de widgets (raiz)
+  if root then
+    pcall(function() root:onKeyDown(code, 0) end)
+    pcall(function() root:onKeyUp(code, 0) end)
+  end
+  return true
+end
+
+-- Dispara el evento de un widget por id (el boton flyUp/flyDown se acciona
+-- llamando a su listener onClick en __conns; funciona en segundo plano, sin foco).
+local function fireWidgetEvent(want, event)
+  local root = g_ui.getRootWidget()
+  if not root then return 0 end
+  local list = {}
+  local function collect(w, d)
+    if not w or d < 0 then return end
+    local oki, wid = pcall(function() return w:getId() end)
+    if oki and wid == want then list[#list + 1] = w end
+    local okd, ch = pcall(function() return w:getChildren() end)
+    if okd and ch then for _, c in ipairs(ch) do collect(c, d - 1) end end
+  end
+  collect(root, 16)
+  local fired = 0
+  for _, w in ipairs(list) do
+    local okv, vis = pcall(function() return w:isVisible() end)
+    if (not okv) or vis then
+      local c = w.__conns
+      local listeners = c and c[event]
+      if type(listeners) == "table" then
+        for _, fn in pairs(listeners) do
+          if type(fn) == "function" then
+            pcall(fn, w)
+            fired = fired + 1
+          end
+        end
+      end
+    end
+  end
+  return fired
+end
+
+-- Dispara un boton de la action bar por su hotkey, o sintetiza la tecla.
+local function fireHotkey(want)
+  want = tostring(want)
+  local root = g_ui.getRootWidget()
+  if root then
+    local ok_bar, bar = pcall(function() return root:recursiveGetChildById("actionBar") end)
+    if ok_bar and bar then
+      local ok_kids, kids = pcall(function() return bar:getChildren() end)
+      if ok_kids and kids then
+        for _, w in ipairs(kids) do
+          local ak = w:getChildById("actionKey")
+          if ak then
+            local okt, t = pcall(function() return ak:getText() end)
+            if okt and tostring(t) == want then
+              local click = { x = w:getWidth() / 2, y = w:getHeight() / 2 }
+              local okd = pcall(function() w:onMouseDown(click, MouseButton.Left) end)
+              local oku = pcall(function() w:onMouseUp(click, MouseButton.Left) end)
+              return "hotkey:" .. want .. " slot=" .. tostring(w:getId())
+                     .. " ok=" .. tostring(okd and oku)
+            end
+          end
+        end
+      end
+    end
+  end
+  if pressKey(want) then return "key:" .. want end
+  return "no-slot:" .. want
+end
+
+-- Fly pendiente (fly [slot]): saca al pokemon volador, espera a estar fuera de
+-- combate y sin enemigos en pantalla, y lanza `orderonself` (player+pokemon se
+-- fusionan y se puede volar; luego flyup/flydown cambian la z).
+local function advanceFly()
+  local fl = PXG_FLY
+  if not fl then return end
+  local gp = modules and modules.game_pokemon
+  local now = (g_clock and g_clock.millis and g_clock.millis()) or 0
+  if not gp then PXG_FLY = nil; PXG_LAST_FLY = "no-module"; return end
+  if fl.slot then
+    local out = false
+    if gp.getPokemonWidgetByIndex and gp.isPokemonActive then
+      local w = gp.getPokemonWidgetByIndex(fl.slot)
+      if w and w.pokeId then
+        local ok, r = pcall(function() return gp.isPokemonActive(tonumber(w.pokeId)) end)
+        out = ok and r == true
+      end
+    end
+    if not out then
+      if not fl.called or (now - (fl.called or 0)) > 1500 then
+        pcall(function() gp.callPokemonByIndex(fl.slot) end)
+        fl.called = now
+      end
+      PXG_LAST_FLY = "summoning"
+      if now - fl.t > 60000 then PXG_FLY = nil end
+      return
+    end
+  end
+  local attacking = false
+  pcall(function() attacking = g_game.getAttackingCreature() ~= nil end)
+  if attacking then
+    PXG_LAST_FLY = "in-combat"
+    if now - fl.t > 60000 then PXG_FLY = nil end
+    return
+  end
+  local n = enemiesOnScreen()
+  if n > 0 then
+    PXG_LAST_FLY = "enemies=" .. n
+    if now - fl.t > 60000 then PXG_FLY = nil end
+    return
+  end
+  local ok, err = pcall(function() return gp.orderPokemonOnSelf() end)
+  PXG_FLY = nil
+  PXG_LAST_FLY = "ok=" .. tostring(ok) .. " err=" .. tostring(err)
+end
+
+-- Fly hasta un z objetivo (repite flyUp/flyDown). Pending en el execTick.
+local function advanceFlyTo()
+  local ft = PXG_FLYTO
+  if not ft then return end
+  local lp = g_game.getLocalPlayer()
+  if not lp then PXG_FLYTO = nil return end
+  local p = lp:getPosition()
+  if not p then return end
+  if p.z == ft.z then
+    PXG_FLYTO = nil
+    PXG_LAST_FLYTO = "at " .. tostring(p.z)
+    return
+  end
+  if p.z > ft.z then
+    fireWidgetEvent("flyUp", "onClick")
+  else
+    fireWidgetEvent("flyDown", "onClick")
+  end
+  local now = (g_clock and g_clock.millis and g_clock.millis()) or 0
+  if now - ft.t > 60000 then
+    PXG_FLYTO = nil
+    PXG_LAST_FLYTO = "timeout"
+  end
+end
+
+-- Vuelca las ubicaciones de teleport (MapLocations) a pxg_locations.json.
+local function saveLocations()
+  local mm = modules and modules.game_minimap
+  if not (mm and mm.MapLocations) then return end
+  local out = {}
+  for region, list in pairs(mm.MapLocations) do
+    if type(list) == "table" then
+      for _, l in pairs(list) do
+        if type(l) == "table" and l.text and type(l.pos) == "table" then
+          out[#out + 1] = {
+            region = tostring(region), name = tostring(l.text),
+            x = tonumber(l.pos.x), y = tonumber(l.pos.y), z = tonumber(l.pos.z),
+          }
+        end
+      end
+    end
+  end
+  local oke, json = pcall(cjson.encode, out)
+  if oke then
+    local f = io.open(DIR .. "/pxg_locations.json", "w")
+    if f then f:write(json); f:close() end
+  end
+end
+
 local function exec(line)
   local op, arg = line:match("^%s*([%a_][%w_]*)%s*(.-)%s*$")
   local res
@@ -1160,6 +1416,511 @@ local function exec(line)
         end
       end
     end
+  elseif op == "opengame" then
+    -- opengame [nombre] : reconecta desde el selector (elige el personaje).
+    local want = tostring(arg or ""):match("^%s*(.-)%s*$")
+    local m = modules and modules.menu_characters
+    if not m then
+      res = "opengame no-module"
+    else
+      local selected = false
+      if want ~= "" and m.character and m.selectCharacter then
+        for _, ch in pairs(m.character) do
+          if type(ch) == "table" and tostring(ch.name) == want then
+            selected = pcall(function() m.selectCharacter(ch) end)
+            break
+          end
+        end
+      end
+      local ok, r = pcall(function() return m.openGame() end)
+      res = "opengame name=" .. tostring(want) .. " sel=" .. tostring(selected)
+            .. " ok=" .. tostring(ok) .. " ret=" .. tostring(r)
+    end
+  elseif op == "deathdismiss" then
+    -- deathdismiss : cierra la ventana de muerte (sin recuperar).
+    local m = modules and modules.game_playerdeath
+    if not m then
+      res = "deathdismiss no-module"
+    else
+      local done = false
+      if m.onOkClicked then done = pcall(function() m.onOkClicked() end) or done end
+      if not done and m.hide then done = pcall(function() m.hide() end) or done end
+      if not done and m.e_deathWindow and m.e_deathWindow.hide then
+        done = pcall(function() m.e_deathWindow:hide() end) or done
+      end
+      res = "deathdismiss ok=" .. tostring(done)
+    end
+  elseif op == "teleportready" then
+    local gp = modules and modules.game_pokemon
+    local can, has = false, false
+    if gp then
+      if gp.canUseTeleport then can = safeCall(function() return gp.canUseTeleport() end) == true end
+      if gp.hasPokemonWithTeleport then has = safeCall(function() return gp.hasPokemonWithTeleport() end) == true end
+    end
+    res = "teleportready can=" .. tostring(can) .. " has=" .. tostring(has)
+  elseif op == "teleport" then
+    -- teleport <destino> | teleport <slot> <destino>
+    -- usa la habilidad Teleport (chat h"<destino>). Con <slot>, saca antes al
+    -- pokemon de ese slot (el que tiene la habilidad) y espera su turno.
+    local a = tostring(arg or ""):match("^%s*(.-)%s*$")
+    local slot, dest = a:match("^(%d+)%s+(.+)$")
+    if not slot then dest = a; slot = nil end
+    local gp = modules and modules.game_pokemon
+    if not (gp and gp.hasPokemonWithTeleport and gp.hasPokemonWithTeleport()) then
+      res = "teleport no-pokemon"
+    elseif dest == "" then
+      res = "teleport no-dest"
+    elseif slot then
+      PXG_TP = { dest = dest, slot = tonumber(slot),
+                 t = (g_clock and g_clock.millis and g_clock.millis()) or 0 }
+      advanceTeleport()
+      res = "teleport queued slot=" .. slot .. " dest=" .. dest
+            .. " " .. tostring(PXG_LAST_TP or "")
+    elseif gp.canUseTeleport and gp.canUseTeleport() then
+      local ok, err = pcall(function() return g_game.talk('h"' .. dest:lower()) end)
+      res = "teleport dest=" .. dest .. " ok=" .. tostring(ok) .. " err=" .. tostring(err)
+    else
+      res = "teleport cooldown"
+    end
+  elseif op == "locations" then
+    -- locations : lista las ubicaciones de teleport (Region:Nombre,...)
+    local mm = modules and modules.game_minimap
+    local parts = {}
+    if mm and mm.MapLocations then
+      for region, list in pairs(mm.MapLocations) do
+        for _, l in pairs(list) do
+          if type(l) == "table" and l.text then
+            parts[#parts + 1] = tostring(region) .. ":" .. tostring(l.text)
+          end
+        end
+      end
+    end
+    table.sort(parts)
+    res = "locations=" .. table.concat(parts, ",")
+  elseif op == "inspect" then
+    -- inspect <a.b.c> : lista claves (string y numericas) y valores de una tabla
+    local cur = _G
+    for part in tostring(arg):gmatch("[^%.]+") do
+      if cur == nil then break end
+      cur = cur[tonumber(part) or part]
+    end
+    local parts = {}
+    if type(cur) == "table" then
+      local n = 0
+      for k, v in pairs(cur) do
+        n = n + 1
+        if n > 80 then parts[#parts + 1] = "..." break end
+        local tv = type(v)
+        local vs
+        if tv == "string" or tv == "number" or tv == "boolean" then vs = tostring(v)
+        elseif tv == "userdata" then vs = tostring(v)
+        else vs = tv end
+        parts[#parts + 1] = tostring(k) .. "(" .. tv .. ")=" .. vs
+      end
+      table.sort(parts)
+      res = "inspect[" .. tostring(arg) .. "]=" .. table.concat(parts, " | ")
+    else
+      res = "inspect[" .. tostring(arg) .. "]=" .. type(cur) .. " " .. tostring(cur)
+    end
+  elseif op == "fly" then
+    -- fly [slot] : orderonself con un pokemon volador fuera (entra en vuelo).
+    local slot = tonumber(tostring(arg or ""):match("^%s*(%d+)"))
+    PXG_FLY = { slot = slot, t = (g_clock and g_clock.millis and g_clock.millis()) or 0 }
+    advanceFly()
+    res = "fly queued slot=" .. tostring(slot) .. " " .. tostring(PXG_LAST_FLY or "")
+  elseif op == "flyup" or op == "flydown" then
+    -- flyup/flydown : subir/bajar en vuelo (dispara el listener del boton del
+    -- slot activo; funciona en segundo plano, sin foco ni input nativo).
+    local id = (op == "flyup") and "flyUp" or "flyDown"
+    local fired = fireWidgetEvent(id, "onClick")
+    res = op .. " id=" .. id .. " fired=" .. tostring(fired)
+  elseif op == "flyto" then
+    local z = tonumber(tostring(arg or ""):match("(-?%d+)"))
+    if not z then
+      res = "flyto bad-z"
+    else
+      PXG_FLYTO = { z = z, t = (g_clock and g_clock.millis and g_clock.millis()) or 0 }
+      advanceFlyTo()
+      res = "flyto z=" .. z .. " " .. tostring(PXG_LAST_FLYTO or "")
+    end
+  elseif op == "savelocations" then
+    saveLocations()
+    res = "savelocations ok"
+  elseif op == "flykeys" then
+    -- diagnostico: codigos de tecla y botones de la action bar
+    local parts = {}
+    if g_keyboard then
+      for _, n in ipairs({ "RePag", "AvPag", "PageUp", "PageDown", "PgUp", "PgDn",
+                           "Prior", "Next" }) do
+        local c = nil
+        if g_keyboard.getKey then
+          local ok, v = pcall(function() return g_keyboard.getKey(n) end)
+          if ok then c = v end
+        end
+        parts[#parts + 1] = n .. "=" .. tostring(c)
+      end
+    end
+    local root = g_ui.getRootWidget()
+    local ab = root and root:recursiveGetChildById("actionBar")
+    if ab then
+      local ok, kids = pcall(function() return ab:getChildren() end)
+      if ok and kids then
+        for _, w in ipairs(kids) do
+          local ak = w:getChildById("actionKey")
+          local t = ak and ak:getText()
+          parts[#parts + 1] = "btn#" .. tostring(w:getId()) .. "[" .. tostring(t) .. "]"
+        end
+      end
+    end
+    res = "flykeys " .. table.concat(parts, " ")
+  elseif op == "flyprobe" then
+    local gp = modules and modules.game_pokemon
+    local parts = {}
+    if gp and gp.getPokemonWidgetByIndex then
+      for i = 1, 6 do
+        local okw, w = pcall(function() return gp.getPokemonWidgetByIndex(i) end)
+        if okw and w then
+          local pid = nil
+          pcall(function() pid = w.pokeId end)
+          local act = false
+          if pid and gp.isPokemonActive then
+            local ok, r = pcall(function() return gp.isPokemonActive(tonumber(pid)) end)
+            act = ok and r == true
+          end
+          local info = "s" .. i .. " pid=" .. tostring(pid) .. " act=" .. tostring(act)
+          for _, id in ipairs({ "flyUp", "flyDown", "autoFly" }) do
+            local okf, f = pcall(function() return w:recursiveGetChildById(id) end)
+            if okf and f then
+              local okv, vis = pcall(function() return f:isVisible() end)
+              local okr, r = pcall(function() return f:getRect() end)
+              info = info .. " " .. id .. "=" .. tostring(vis)
+              if okr and r then info = info .. "(" .. r.x .. "," .. r.y .. "," .. r.width .. "x" .. r.height .. ")" end
+            end
+          end
+          parts[#parts + 1] = info
+        end
+      end
+    end
+    res = "flyprobe " .. table.concat(parts, " || ")
+  elseif op == "wfields" then
+    -- wfields <id> : campos (escalares y funciones) del widget visible con ese id
+    local want = tostring(arg)
+    local root = g_ui.getRootWidget()
+    local list = {}
+    local function collect(w, d)
+      if not w or d < 0 then return end
+      local oki, wid = pcall(function() return w:getId() end)
+      if oki and wid == want then list[#list + 1] = w end
+      local okd, ch = pcall(function() return w:getChildren() end)
+      if okd and ch then for _, c in ipairs(ch) do collect(c, d - 1) end end
+    end
+    collect(root, 16)
+    local target = nil
+    for _, w in ipairs(list) do
+      local okv, vis = pcall(function() return w:isVisible() end)
+      if (not okv) or vis then target = w break end
+    end
+    if not target then
+      res = "wfields none:" .. want .. " n=" .. #list
+    else
+      local parts = {}
+      for k, v in pairs(target) do
+        local tv = type(v)
+        if type(k) == "string" then
+          if tv == "function" then
+            parts[#parts + 1] = k .. "()"
+          elseif tv == "number" or tv == "string" or tv == "boolean" then
+            parts[#parts + 1] = k .. "=" .. tostring(v)
+          end
+        end
+      end
+      table.sort(parts)
+      res = "wfields[" .. want .. "]=" .. table.concat(parts, ",")
+    end
+  elseif op == "wget" then
+    local id, field = tostring(arg):match("^(%S+)%s+(%S+)$")
+    if not (id and field) then
+      res = "wget bad-args"
+    else
+      local root = g_ui.getRootWidget()
+      local list = {}
+      local function collect(w, d)
+        if not w or d < 0 then return end
+        local oki, wid = pcall(function() return w:getId() end)
+        if oki and wid == id then list[#list + 1] = w end
+        local okd, ch = pcall(function() return w:getChildren() end)
+        if okd and ch then for _, c in ipairs(ch) do collect(c, d - 1) end end
+      end
+      collect(root, 16)
+      local target = nil
+      for _, w in ipairs(list) do
+        local okv, vis = pcall(function() return w:isVisible() end)
+        if (not okv) or vis then target = w break end
+      end
+      if not target then
+        res = "wget none:" .. id
+      else
+        local okv, v = pcall(function() return target[field] end)
+        res = "wget[" .. id .. "." .. field .. "]=" .. tostring(okv) .. " " .. type(v)
+              .. " " .. tostring(v)
+      end
+    end
+  elseif op == "wcall" then
+    local id, field = tostring(arg):match("^(%S+)%s+(%S+)")
+    if not (id and field) then
+      res = "wcall bad-args"
+    else
+      local root = g_ui.getRootWidget()
+      local list = {}
+      local function collect(w, d)
+        if not w or d < 0 then return end
+        local oki, wid = pcall(function() return w:getId() end)
+        if oki and wid == id then list[#list + 1] = w end
+        local okd, ch = pcall(function() return w:getChildren() end)
+        if okd and ch then for _, c in ipairs(ch) do collect(c, d - 1) end end
+      end
+      collect(root, 16)
+      local target = nil
+      for _, w in ipairs(list) do
+        local okv, vis = pcall(function() return w:isVisible() end)
+        if (not okv) or vis then target = w break end
+      end
+      if not target then
+        res = "wcall none:" .. id
+      else
+        local fn = target[field]
+        if type(fn) ~= "function" then
+          res = "wcall[" .. id .. "." .. field .. "] notfunc:" .. type(fn)
+        else
+          local ok, r = pcall(fn, target)
+          res = "wcall[" .. id .. "." .. field .. "] ok=" .. tostring(ok) .. " ret=" .. tostring(r)
+        end
+      end
+    end
+  elseif op == "wcallup" then
+    -- wcallup <id> : clic completo (onMouseDown/onMouseUp con pos+boton)
+    local id = tostring(arg)
+    local root = g_ui.getRootWidget()
+    local list = {}
+    local function collect(w, d)
+      if not w or d < 0 then return end
+      local oki, wid = pcall(function() return w:getId() end)
+      if oki and wid == id then list[#list + 1] = w end
+      local okd, ch = pcall(function() return w:getChildren() end)
+      if okd and ch then for _, c in ipairs(ch) do collect(c, d - 1) end end
+    end
+    collect(root, 16)
+    local target = nil
+    for _, w in ipairs(list) do
+      local okv, vis = pcall(function() return w:isVisible() end)
+      if (not okv) or vis then target = w break end
+    end
+    if not target then
+      res = "wcallup none:" .. id
+    else
+      local pos = { x = target:getWidth() / 2, y = target:getHeight() / 2 }
+      pcall(function() target:onMouseDown(pos, MouseButton.Left) end)
+      local ok, r = pcall(function() return target:onMouseUp(pos, MouseButton.Left) end)
+      res = "wcallup[" .. id .. "] ok=" .. tostring(ok) .. " ret=" .. tostring(r)
+    end
+  elseif op == "src" then
+    local cur = _G
+    for part in tostring(arg):gmatch("[^%.]+") do
+      if cur == nil then break end
+      cur = cur[tonumber(part) or part]
+    end
+    if type(cur) ~= "function" then
+      res = "src notfunc:" .. type(cur)
+    else
+      local oki, info = pcall(debug.getinfo, cur, "Su")
+      local parts = {}
+      if oki and info then
+        parts[#parts + 1] = "src=" .. tostring(info.short_src) .. " line=" .. tostring(info.linedefined)
+        parts[#parts + 1] = "nparams=" .. tostring(info.nparams) .. " nups=" .. tostring(info.nups)
+        for i = 1, (info.nups or 0) do
+          local okn, n, v = pcall(debug.getupvalue, cur, i)
+          if okn then parts[#parts + 1] = "up" .. i .. "=" .. tostring(n) .. ":" .. type(v) end
+        end
+      else
+        parts[#parts + 1] = "noinfo:" .. tostring(info)
+      end
+      res = "src[" .. tostring(arg) .. "] " .. table.concat(parts, " ")
+    end
+  elseif op == "findwidget" then
+    local want = tostring(arg):lower()
+    local root = g_ui.getRootWidget()
+    local out = {}
+    local function scan(w, d)
+      if not w or d < 0 or #out >= 40 then return end
+      local okc, cl = pcall(function() return w:getClassName() end)
+      local oki, id = pcall(function() return w:getId() end)
+      local okt, tx = pcall(function() return w.getText and w:getText() end)
+      local s = tostring(cl) .. " " .. tostring(id) .. " " .. tostring(tx)
+      if s:lower():find(want, 1, true) then
+        out[#out + 1] = tostring(cl) .. "#" .. tostring(id) .. "[" .. tostring(tx) .. "]"
+      end
+      local okd, ch = pcall(function() return w:getChildren() end)
+      if okd and ch then for _, c in ipairs(ch) do scan(c, d - 1) end end
+    end
+    scan(root, 14)
+    res = "findwidget=" .. table.concat(out, " || ")
+  elseif op == "call1" then
+    -- call1 <a.b.c> <arg> : llama a la funcion con un argumento
+    local path, a = tostring(arg):match("^(%S+)%s*(.*)$")
+    local cur = _G
+    for part in tostring(path):gmatch("[^%.]+") do
+      if cur == nil then break end
+      cur = cur[tonumber(part) or part]
+    end
+    if type(cur) ~= "function" then
+      res = "call1 notfunc:" .. type(cur)
+    else
+      local ok, r = pcall(cur, a)
+      res = "call1[" .. tostring(path) .. "(" .. tostring(a) .. ")] ok="
+            .. tostring(ok) .. " ret=" .. tostring(r)
+    end
+  elseif op == "calli" then
+    -- calli <a.b.c> : llama a la funcion (sin args) e inspecciona la tabla resultante
+    local cur = _G
+    for part in tostring(arg):gmatch("[^%.]+") do
+      if cur == nil then break end
+      cur = cur[tonumber(part) or part]
+    end
+    if type(cur) ~= "function" then
+      res = "calli notfunc:" .. type(cur)
+    else
+      local ok, r = pcall(cur)
+      if not ok then
+        res = "calli err:" .. tostring(r)
+      elseif type(r) == "table" then
+        local parts = {}
+        for k, v in pairs(r) do
+          local tv = type(v)
+          if tv == "string" or tv == "number" or tv == "boolean" then
+            parts[#parts + 1] = tostring(k) .. "=" .. tostring(v)
+          else
+            parts[#parts + 1] = tostring(k) .. "(" .. tv .. ")"
+          end
+        end
+        table.sort(parts)
+        res = "calli[" .. tostring(arg) .. "]=" .. table.concat(parts, " | ")
+      else
+        res = "calli[" .. tostring(arg) .. "]=" .. type(r) .. " " .. tostring(r)
+      end
+    end
+  elseif op == "wsrc" then
+    local id, field = tostring(arg):match("^(%S+)%s+(%S+)$")
+    if not (id and field) then
+      res = "wsrc bad-args"
+    else
+      local root = g_ui.getRootWidget()
+      local list = {}
+      local function collect(w, d)
+        if not w or d < 0 then return end
+        local oki, wid = pcall(function() return w:getId() end)
+        if oki and wid == id then list[#list + 1] = w end
+        local okd, ch = pcall(function() return w:getChildren() end)
+        if okd and ch then for _, c in ipairs(ch) do collect(c, d - 1) end end
+      end
+      collect(root, 16)
+      local target = nil
+      for _, w in ipairs(list) do
+        local okv, vis = pcall(function() return w:isVisible() end)
+        if (not okv) or vis then target = w break end
+      end
+      if not target then
+        res = "wsrc none:" .. id
+      else
+        local fn = target[field]
+        if type(fn) ~= "function" then
+          res = "wsrc[" .. id .. "." .. field .. "] notfunc:" .. type(fn)
+        else
+          local oki, info = pcall(debug.getinfo, fn, "Su")
+          local parts = {}
+          if oki and info then
+            parts[#parts + 1] = "src=" .. tostring(info.short_src) .. " line="
+                  .. tostring(info.linedefined) .. " nparams=" .. tostring(info.nparams)
+                  .. " nups=" .. tostring(info.nups)
+            for i = 1, (info.nups or 0) do
+              local okn, n, v = pcall(debug.getupvalue, fn, i)
+              if okn then parts[#parts + 1] = "up" .. i .. "=" .. tostring(n) .. ":" .. type(v) end
+            end
+          end
+          res = "wsrc[" .. id .. "." .. field .. "] " .. table.concat(parts, " ")
+        end
+      end
+    end
+  elseif op == "wconns" then
+    local id = tostring(arg)
+    local root = g_ui.getRootWidget()
+    local list = {}
+    local function collect(w, d)
+      if not w or d < 0 then return end
+      local oki, wid = pcall(function() return w:getId() end)
+      if oki and wid == id then list[#list + 1] = w end
+      local okd, ch = pcall(function() return w:getChildren() end)
+      if okd and ch then for _, c in ipairs(ch) do collect(c, d - 1) end end
+    end
+    collect(root, 16)
+    local target = nil
+    for _, w in ipairs(list) do
+      local okv, vis = pcall(function() return w:isVisible() end)
+      if (not okv) or vis then target = w break end
+    end
+    local c = target and target.__conns
+    if type(c) ~= "table" then
+      res = "wconns[" .. id .. "]=" .. type(c)
+    else
+      local parts = {}
+      for k, v in pairs(c) do
+        local tv = type(v)
+        if tv == "table" then
+          local n = 0
+          for _ in pairs(v) do n = n + 1 end
+          parts[#parts + 1] = tostring(k) .. "[" .. n .. "]"
+        else
+          parts[#parts + 1] = tostring(k) .. ":" .. tv
+        end
+      end
+      table.sort(parts)
+      res = "wconns[" .. id .. "]=" .. table.concat(parts, ",")
+    end
+  elseif op == "wfire" then
+    local id, event = tostring(arg):match("^(%S+)%s+(%S+)$")
+    if not (id and event) then
+      res = "wfire bad-args"
+    else
+      local root = g_ui.getRootWidget()
+      local list = {}
+      local function collect(w, d)
+        if not w or d < 0 then return end
+        local oki, wid = pcall(function() return w:getId() end)
+        if oki and wid == id then list[#list + 1] = w end
+        local okd, ch = pcall(function() return w:getChildren() end)
+        if okd and ch then for _, c in ipairs(ch) do collect(c, d - 1) end end
+      end
+      collect(root, 16)
+      local target = nil
+      for _, w in ipairs(list) do
+        local okv, vis = pcall(function() return w:isVisible() end)
+        if (not okv) or vis then target = w break end
+      end
+      local c = target and target.__conns
+      local listeners = c and c[event]
+      if type(listeners) ~= "table" then
+        res = "wfire[" .. id .. "." .. event .. "] no-listeners:" .. type(listeners)
+      else
+        local n, okc = 0, 0
+        for _, fn in pairs(listeners) do
+          if type(fn) == "function" then
+            local ok = pcall(fn, target)
+            n = n + 1
+            if ok then okc = okc + 1 end
+          end
+        end
+        res = "wfire[" .. id .. "." .. event .. "] fired=" .. n .. " ok=" .. okc
+      end
+    end
   elseif op == "luaver" then
     res = "lua=" .. tostring(_VERSION)
   elseif op == "proto" then
@@ -1194,15 +1955,25 @@ local function exec(line)
   return res
 end
 
+-- Estado cuando NO hay jugador local (login/selector): aun asi publicamos lo que
+-- se pueda para que el bot distinga "selector de personajes" de "reconectando".
+local function basicState()
+  local online = safeCall(function() return g_game.isOnline() end)
+  local conn = safeCall(function() return g_game.isConnectionOk() end)
+  local sel = false
+  local m = modules and modules.menu_characters
+  if m and m.e_menu and m.e_menu.isVisible then
+    sel = safeCall(function() return m.e_menu:isVisible() end) == true
+  end
+  return { connected = false, online = online == true, conn_ok = conn == true,
+           selector = sel, last_cmd = tostring(PXG_LAST_CMD or "") }
+end
+
 local function snapshot()
   local lp = g_game.getLocalPlayer()
-  if not lp then
-    -- sin jugador (login/selector): publicar igualmente la ultima salida de
-    -- comando para poder diagnosticar/actuar fuera del juego.
-    return { connected = false, last_cmd = tostring(PXG_LAST_CMD or "") }
-  end
+  if not lp then return basicState() end
   local p = lp:getPosition()
-  if not p then return { connected = false, last_cmd = tostring(PXG_LAST_CMD or "") } end
+  if not p then return basicState() end
   local st = {
     connected = true, name = lp:getName(),
     hp = lp:getHealth(), maxhp = lp:getMaxHealth(), hppct = lp:getHealthPercent(),
@@ -1601,6 +2372,34 @@ local function snapshot()
   -- modo de pelea del cliente (1=Ofensivo, 2=Equilibrado, 3=Defensivo)
   local okfm, fmd = pcall(function() return g_game.getFightMode() end)
   st.fight_mode = (okfm and fmd) or nil
+  -- muerte / conexion
+  st.dead = safeCall(function() return g_game.isDead() end) == true
+  st.online = safeCall(function() return g_game.isOnline() end) == true
+  st.conn_ok = safeCall(function() return g_game.isConnectionOk() end) == true
+  st.death_window = false
+  do
+    local m = modules and modules.game_playerdeath
+    if m and m.e_deathWindow and m.e_deathWindow.isVisible then
+      st.death_window = safeCall(function() return m.e_deathWindow:isVisible() end) == true
+    end
+  end
+  -- teleport (habilidad de un pokemon del equipo)
+  st.has_teleport = false
+  st.can_teleport = false
+  do
+    local gp = modules and modules.game_pokemon
+    if gp then
+      if gp.hasPokemonWithTeleport then
+        st.has_teleport = safeCall(function() return gp.hasPokemonWithTeleport() end) == true
+      end
+      if gp.canUseTeleport then
+        st.can_teleport = safeCall(function() return gp.canUseTeleport() end) == true
+      end
+    end
+  end
+  st.teleport_result = tostring(PXG_LAST_TP or "")
+  st.in_combat = safeCall(function() return g_game.getAttackingCreature() ~= nil end) == true
+  st.fly_result = tostring(PXG_LAST_FLY or "")
   return st
 end
 
@@ -1614,6 +2413,9 @@ local function execTick()
     end
   end)
   pcall(advanceNav)
+  pcall(advanceTeleport)
+  pcall(advanceFly)
+  pcall(advanceFlyTo)
   pcall(function() PXG_EVENT_EXEC = g_eventDispatcher.schedule(execTick, 60) end)
 end
 
@@ -1678,6 +2480,9 @@ local function snapTick()
       end
     end
     pcall(saveMap)
+  end
+  if PXG_SAVET % 25 == 0 then
+    pcall(saveLocations)
   end
   pcall(function() PXG_EVENT_SNAP = g_eventDispatcher.schedule(snapTick, 200) end)
 end

@@ -269,6 +269,29 @@ DEFAULT_BEHAVIORS = {
         "resend_secs": 0.6,
         "save_interval": 5.0,
     },
+    "recovery": {
+        "enabled": True,
+        "character": "",               # "" = ultimo personaje usado
+        "retry_secs": 5.0,             # backoff de reconexion
+        "dismiss_death_window": True,
+        "travel_method": "auto",           # auto | recall | fly (auto: Outland->recall, resto->fly)
+        "teleport_timeout_secs": 240.0,
+        "fly_move_timeout_secs": 180.0,
+        "recall_arrive_distance": 1,
+        "recall_timeout_secs": 180.0,
+        "teleport": {
+            "enabled": True,
+            "region": "Outland",
+            "destination": "Outland North",
+            "pokemon_slot": 1,         # slot del pokemon con la habilidad Teleport (Abra)
+            "pokemon": "Abra",
+            "recall_route": "",        # nombre de la ruta de recall (pxg_routes.json)
+        },
+        "fly": {
+            "pokemon_slot": 2,         # slot del pokemon volador (habilidad Fly)
+            "pokemon": "",
+        },
+    },
 }
 
 

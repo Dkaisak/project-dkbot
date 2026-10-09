@@ -370,6 +370,56 @@ sin cursor) → sacar (call slot)**. El **primer** revive de la sesión espera
   modo clásico (Thing bajo el cursor). `orderonself` usa `g_game.useWith(item,
   g_localPlayer)` (tampoco usa cursor). El control acepta `order: [x,y,z]`.
 
+### 5.7 Recuperación (`RecoveryBehavior`, prioridad 101)
+
+Reconexión y retorno tras muerte. Está **por encima de `crisis` (100)**, así que
+mientras dura preempta todo lo demás.
+
+- **Reconexión**: si el cliente cae al **selector de personajes**, reconecta
+  **siempre el mismo personaje** (`modules.menu_characters.selectCharacter` +
+  `openGame`), con backoff (`retry_secs`). El personaje se recuerda de
+  `state.player.name` mientras está online.
+- **Muerte**: detecta `g_game.isDead()` / la ventana de muerte; **cierra la
+  ventana sin recuperar** (`deathdismiss`) y guarda el **inicio de la ruta activa**
+  (`waypoints[0]`) y el slot del Pokémon de farmeo que estaba fuera.
+- **Teleport**: al respawn, **saca el Pokémon con la habilidad Teleport**
+  (`teleport.pokemon_slot`, p. ej. Abra), espera `canUseTeleport()` y teletransporta
+  **por chat** (`h"<destino>`, p. ej. `h"outland north`). Después vuelve a sacar el
+  Pokémon de farmeo.
+- **Recall**: sigue una **ruta de recall** grabada por el usuario (nombre en
+  `teleport.recall_route`) desde el destino del teleport hasta el inicio de la ruta;
+  soporta **cambio de piso** (si un waypoint está en otro `z`, navega a su `(x,y)`
+  en el piso actual y usa la escalera). Al terminar, reanuda la ruta de farmeo desde
+  el waypoint 0.
+- **Fly** (`travel_method: fly` o `auto` fuera de Outland): tras teleportar a la
+  **ciudad más cercana al inicio de la ruta** (se elige por distancia, de
+  `pxg_locations.json` que vuelca el agente), entra en **vuelo** (`fly`), sube a
+  **z=1** (`flyto 1`), **vuela** hasta el `(x,y)` del inicio de la ruta, **baja** al
+  `z` de la ruta (`flyto <z>`), **desmonta** (`orderonself`) y reanuda la ruta. Fly
+  up/down funcionan **en segundo plano** (disparan el listener `onClick` del botón
+  del slot activo; ver §5.8).
+- **Método**: `travel_method` (`auto` | `fly` | `recall`). En **Outland no se puede
+  volar** → `auto` usa la **ruta de recall**.
+- Config en `behaviors.recovery` (ver §14); editable en la GUI (tarjeta
+  *Recuperación*, pestaña Ruta).
+
+### 5.8 Fly (vuelo)
+
+`fly` entra en **modo vuelo**: con un **Pokémon volador fuera**, `orderonself`
+(el propio summon sobre el personaje) fusiona player+Pokémon y permite volar.
+Sin cooldown; requiere **sin enemigos en pantalla** y **fuera de combate**.
+Es distinto del teleport: **fly sirve para cambiar de `z`/región** (no cruza
+Kanto↔Johto, no Outland, no bajo el agua) y es la mecánica para volver a los
+spawns de las regiones (fuera de Outland).
+
+- Agente: `fly [slot]` (saca al volador si hace falta y lanza `orderonself` con
+  *pending*). `flyup`/`flydown` (subir/bajar la `z`) llaman al **listener `onClick`
+  del botón `flyUp`/`flyDown` del slot activo** (`widget.__conns.onClick`): **puro
+  Lua, en segundo plano**, sin foco ni input nativo (los eventos sintéticos
+  "normales" —`onMouseDown/onClick` directos, tecla— **no** lo disparan).
+- Slot del volador: `behaviors.recovery.fly.pokemon_slot` (editable en la GUI).
+- Telegram: `/fly` `/volar` `/voar`, `/flyup` `/subir`, `/flydown` `/bajar` `/descer`.
+
 ---
 
 ## 6. Navegación (agente Lua + bot)
@@ -516,9 +566,10 @@ Pestañas y tarjetas:
   vacío = automático según la plataforma; botón *Detectar* que rellena con el
   cliente en ejecución; lo usa *Atachar* y se guarda en `config.json`, para
   alternar Windows/Linux sin editar el fichero a mano), **Estado del jugador**
-  (HP/MP, posición, nivel, enemigos, `nav`/`cmd`) y **Contadores de sesión**
+  (HP/MP, posición, nivel, enemigos, `nav`/`cmd`), **Contadores de sesión**
   (kills, loots, looted, balls, capturas, revives, skills, pokestops, lures,
-  tomados del `status_file`).
+  tomados del `status_file`) y **Comportamientos** (toggles globales
+  crisis/combat/loot/revive/recovery/explore; **sin curación**).
 - **Combate**: lure/objetivo, casteo (skill lista %, intervalo, "todos a rango"),
   **Buff** (enemigos mínimos y **gate**: en pantalla / todos a rango / gate de
   combate) y **Pánico** (%, fuente de vida y skills).
@@ -528,18 +579,19 @@ Pestañas y tarjetas:
   y filtro `names`/`exclude` por nombre (y *catch_all*).
 - **Equipo**: slots con HP y activo, y selector del Pokémon de la ruta (se saca
   al iniciarla); **Revive** (slot, ítem, sin-revives → logout, tecla).
-- **Ruta**: mapa real (base otmm, pan/zoom, transitabilidad y editor de ruta;
-  la paleta es la **real del cliente**, cubo 6×6×6), **Idle de inicio**,
-  **Comportamientos** (toggles crisis/combat/loot/revive/explore; **sin
-  curación**) y **Exploración** (punto de partida, radio, patrullar).
 - **Skills** (pestaña propia): **Skills rápidas** (clic = lanzar la skill) y
   **Skills / combo del lure** (orden por Pokémon + skills marcadas para cada
   lure, con **✕** para borrar del catálogo; el Pokémon activo se resalta y no se
   puede borrar).
+- **Ruta**: mapa real (base otmm, pan/zoom, transitabilidad y editor de ruta;
+  la paleta es la **real del cliente**, cubo 6×6×6), **Idle de inicio** y
+  **Exploración** (punto de partida, radio, patrullar).
+- **Recuperación** (pestaña propia): **Recuperación** (activar, cerrar ventana de
+  muerte, personaje a reconectar, slot del Pokémon con Teleport, región/destino y
+  ruta de recall; ver §5.7) y **Telemetría de muertes** (contador, tamaño de los
+  ficheros y últimas muertes con sus señales; ver §22).
+- **IA**: **decisión del LLM** (estado/modelo/consultas/decisión actual; ver §21).
 - **Ignorar**: criaturas ignoradas (cada jugador muestra su `[clan]` y `skull`).
-- **IA**: **decisión del LLM** (estado/modelo/consultas/decisión actual) y
-  **telemetría de muertes** (contador, tamaño de los ficheros y últimas muertes
-  con sus señales; ver §21/§22).
 - **Telegram**: avisos al móvil — activar/desactivar, token y chat id, qué
   eventos avisar (muerte, jugador, shiny, captura, sin revives, desconexión),
   rango de jugador y botón *Enviar prueba* (ver §24).
@@ -620,6 +672,9 @@ sobreescribe. La GUI edita `config.json` y el canal de control
 `useinv`, `say`,
 `scanmap`, `savemap`, `thingat`, `cover`, `ball`, `order [x y z]`, `orderonself`,
 `setfightmode`, `introspect`, `dump`, `dumpn`, `luaver`, `proto`, `ga`, `debug*`.
+Recuperación/diagnóstico: `opengame [nombre]`, `deathdismiss`, `teleport <destino>`,
+`teleportready`, `fly [slot]`, `flyup`, `flydown`, `locations`, `get <a.b.c>`,
+`call <a.b.c>`, `callm <a.b.metodo>`, `inspect <a.b.c>`, `lua <codigo>`.
 
 ---
 
@@ -917,6 +972,7 @@ el bot funciona igual.
 | `player_range` | `7` | Tiles a los que avisa de otro jugador. |
 | `events` | todos `true` | `death`, `player`, `shiny`, `capture`, `revives_out`, `disconnect`. |
 | `cooldowns` | — | Segundos mínimos entre avisos de cada evento. |
+| `commands` | ver abajo | Comandos entrantes (control por Telegram). |
 
 Todo se edita desde la pestaña **Telegram** de la GUI: se guarda en `config.json`
 y se aplica **en caliente** por el canal de control. El botón **Enviar prueba**
@@ -925,3 +981,61 @@ manda un mensaje de verificación.
 > Crea el bot con **@BotFather** (`/newbot`), copia el token y escríbele algo al
 > bot; tu `chat_id` lo obtienes en
 > `https://api.telegram.org/bot<token>/getUpdates`.
+
+### 24.1 Comandos entrantes (`pxg_bot/telegram_commands.py`)
+
+Además de avisar, el bot **recibe comandos** desde el móvil. El listener vive en
+el **supervisor** (GUI/app), que es quien arranca/para el bot y gestiona rutas y
+control; usa **long-poll** de `getUpdates` (stdlib), con offset persistido y lista
+de permitidos. **Requiere la GUI/app en marcha** (igual que el botón in-game).
+
+Comandos (**aliases es / en / pt**):
+
+| Acción | Aliases |
+|---|---|
+| arrancar | `/start` `/iniciar` `/começar` |
+| parar | `/stop` `/detener` `/parar` |
+| pausar | `/pause` `/pausar` |
+| reanudar | `/resume` `/reanudar` `/continuar` |
+| pánico | `/panic` `/panico` `/pânico` |
+| estado | `/status` `/estado` |
+| ir a una ruta guardada | `/route` `/ruta` `/rota` `<nombre>` |
+| listar rutas | `/routes` `/rutas` `/rotas` |
+| seguir la ruta | `/follow` `/seguir` |
+| parar la ruta | `/stoproute` `/pararuta` `/pararrota` |
+| posición | `/where` `/donde` `/onde` |
+| teletransportar | `/teleport` `/teleportar` `<destino>` |
+| últimas muertes | `/deaths` `/muertes` `/mortes` |
+| contadores | `/counters` `/contadores` |
+| jugadores cerca | `/players` `/jugadores` `/jogadores` |
+| registro | `/log` `/registro` `[n]` |
+| activar/desactivar behavior | `/behavior` `/comportamiento` `<nombre>` `<on\|off>` |
+| atajos | `/combat` `/explore` `/loot` `/capture` `/revive` `/recovery` `<on\|off>` |
+| capturar todo | `/catchall` `<on\|off>` |
+| perfil humanizer | `/humanizer` `<light\|normal\|aggressive>` |
+| captura de pantalla | `/screenshot` `/pantalla` `/tela` |
+| reinyectar el agente | `/attach` `/atachar` |
+| volar | `/fly` `/volar` `/voar` |
+| altura en vuelo | `/flyup` `/subir` · `/flydown` `/bajar` `/descer` |
+| ayuda | `/help` `/ayuda` `/ajuda` |
+
+- `/status` muestra el estado y un **teclado inline** (Iniciar/Detener/Pausar/
+  Reanudar/Pánico). Las acciones destructivas (`/stop`, `/panic`) piden
+  **confirmación** con botones.
+- La respuesta va en el **idioma del alias** usado (fallback `commands.language`).
+- Solo responde a los `allowed_chat_ids`/`allowed_user_ids`; vacío = el `chat_id`
+  configurado (y cualquier usuario de ese chat).
+- Al arrancar **descarta el backlog** (`deleteWebhook` + `offset=-1`) para no
+  re-ejecutar comandos viejos; el `offset` se guarda en
+  `pxg_telegram_offset.json`.
+
+`commands` en `config.json` → `telegram.commands`:
+
+| Clave | Def. | Qué hace |
+|---|---|---|
+| `enabled` | `false` | Activa la escucha de comandos. |
+| `allowed_chat_ids` | `[]` | Chats permitidos (vacío = `telegram.chat_id`). |
+| `allowed_user_ids` | `[]` | Usuarios permitidos (vacío = cualquiera del chat). |
+| `language` | `es` | Idioma por defecto de las respuestas. |
+| `poll_timeout` | `25` | Segundos del long-poll. |
+| `confirm_destructive` | `true` | Pedir confirmación en stop/pánico. |

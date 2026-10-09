@@ -317,6 +317,14 @@
       "capture": 0.0,
       "revives_out": 60.0,
       "disconnect": 30.0
+    },
+    "commands": {
+      "enabled": true,
+      "allowed_chat_ids": [],
+      "allowed_user_ids": [],
+      "language": "es",
+      "poll_timeout": 25,
+      "confirm_destructive": true
     }
   },
   "lua": {
@@ -535,6 +543,29 @@
       "interval_secs": 3.0,
       "radius": 4,
       "max_dist": 2
+    },
+    "recovery": {
+      "enabled": true,
+      "character": "",
+      "retry_secs": 5.0,
+      "dismiss_death_window": true,
+      "travel_method": "auto",
+      "teleport_timeout_secs": 240.0,
+      "fly_move_timeout_secs": 180.0,
+      "recall_arrive_distance": 1,
+      "recall_timeout_secs": 180.0,
+      "teleport": {
+        "enabled": true,
+        "region": "Outland",
+        "destination": "Outland North",
+        "pokemon_slot": 1,
+        "pokemon": "Abra",
+        "recall_route": ""
+      },
+      "fly": {
+        "pokemon_slot": 2,
+        "pokemon": ""
+      }
     }
   },
   "route": {

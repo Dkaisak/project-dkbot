@@ -145,6 +145,7 @@ def run(cfg_path: str, host: str | None = None, port: int | None = None) -> int:
 
     app = Dashboard(cfg_path)
     Handler.app = app
+    app.start_telegram_commands()
     try:
         httpd = ThreadingHTTPServer((host, port), Handler)
     except OSError as exc:
@@ -158,6 +159,7 @@ def run(cfg_path: str, host: str | None = None, port: int | None = None) -> int:
         import webview
     except Exception as exc:
         print(f"aviso: pywebview no instalado ({exc})")
+        app.stop_telegram_commands()
         return _fallback_browser(url, httpd)
 
     icon_path = _icon_path(cfg)
@@ -200,6 +202,7 @@ def run(cfg_path: str, host: str | None = None, port: int | None = None) -> int:
         webview.start(func=_on_started, icon=icon_path, debug=bool(ui.get("debug", False)))
     except Exception as exc:
         print(f"aviso: no se pudo iniciar la ventana nativa ({exc})")
+        app.stop_telegram_commands()
         return _fallback_browser(url, httpd)
     finally:
         try:
@@ -207,6 +210,7 @@ def run(cfg_path: str, host: str | None = None, port: int | None = None) -> int:
                 tray.stop()
         except Exception:
             pass
+        app.stop_telegram_commands()
         httpd.shutdown()
     return 0
 

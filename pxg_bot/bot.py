@@ -125,6 +125,9 @@ class Bot:
         self.bb.notes["revive_urgent"] = self._revive_is_urgent(state)
         # capturas confirmadas (contador del agente)
         self._count_captures(state)
+        # personaje actual: la reconexion siempre vuelve al mismo personaje
+        if getattr(state, "connected", False) and state.player.name:
+            self.bb.notes["last_character"] = state.player.name
         # sin revives -> logout + detener (proactivo, en cuanto llega a 0)
         self._check_revives_out(state)
         if not (self.bb.paused or self.control_paused):
@@ -198,6 +201,20 @@ class Bot:
             for behavior in self.behaviors:
                 if behavior.name == "loot":
                     behavior.cfg.update(loot)
+        recovery = data.get("recovery")
+        if isinstance(recovery, dict) and recovery:
+            for behavior in self.behaviors:
+                if behavior.name == "recovery":
+                    for key, value in recovery.items():
+                        if isinstance(value, dict) and isinstance(behavior.cfg.get(key), dict):
+                            behavior.cfg[key].update(value)
+                        else:
+                            behavior.cfg[key] = value
+        humanizer = data.get("humanizer")
+        if isinstance(humanizer, dict) and humanizer:
+            self.cfg.setdefault("settings", {}).setdefault("humanizer", {}).update(humanizer)
+            self.humanizer = Humanizer(self.cfg.get("settings", {}).get("humanizer", {}))
+            self.bb.humanizer = self.humanizer
         telegram = data.get("telegram")
         if isinstance(telegram, dict) and telegram:
             self.notifier.set_config(telegram)
@@ -235,6 +252,8 @@ class Bot:
             if behavior.name == "route":
                 behavior.route = self.route
                 behavior.cfg["enabled"] = bool(route.get("enabled", True))
+            elif behavior.name == "recovery":
+                behavior.route = self.route
         self._set_route_pokemon(pokemon, pslot)
 
     def _set_route_pokemon(self, name, slot) -> None:

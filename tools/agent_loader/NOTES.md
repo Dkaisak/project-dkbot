@@ -142,3 +142,24 @@ cliente sigue estable.
    arrancar la GUI/bot (`python main.py gui` / `run_windows.bat`).
 3. Re-derivar firmas tras cada update del cliente con
    `tools/derive_signatures.py` (oráculo Linux) + los call sites descritos.
+
+## 9. Fix de reinyeccion en la misma sesion (RVA del fallback)
+
+El hook inline de `lua_gettop` **no se retira** tras capturar el `lua_State`, asi
+que en una segunda inyeccion la firma ya no coincide y el loader usa el fallback
+`base + PXG_RVA_LUA_GETTOP`. Ese RVA estaba **0x1000 por debajo** del real (build
+actual): los cuatro RVAs se corrigieron en `signatures.h`:
+
+| | antes | correcto |
+|---|---|---|
+| `lua_gettop` | `0x0A29C30` | `0x0A2AC30` |
+| `lua_pcall` | `0x0A32380` | `0x0A33380` |
+| `luaL_loadbuffer` | `0x0A33A40` | `0x0A34A40` |
+
+Con eso, `hook previo detectado` localiza el `lua_State` en el stub existente y
+recarga el agente **sin reiniciar el cliente**. Si el cliente se actualiza,
+re-derivar y ajustar de nuevo (los RVAs cambian; la firma sigue siendo primaria).
+
+> La canonica `tools/agent_loader/pxg_agent_loader.dll` ya esta recompilada con el
+> fix (recompilada con el cliente cerrado). Si el cliente se actualiza, re-derivar
+> y recompilar de nuevo.

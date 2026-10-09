@@ -113,6 +113,7 @@ class Dashboard:
         self.lock = threading.Lock()
         self._apply_cfg(load_config(cfg_path))
         self._ui_stop = threading.Event()
+        self._tg_listener = None
         self._start_ui_watch()
 
     def _apply_cfg(self, cfg: dict) -> None:
@@ -215,11 +216,15 @@ class Dashboard:
 
     # --- telegram ---
     def telegram(self) -> dict:
-        """Config de avisos + estado en vivo (del status_file)."""
+        """Config de avisos + estado en vivo (del status_file) + estado de comandos."""
         cfg = load_config(self.cfg_path)
         tg = cfg.get("telegram", {}) or {}
         status = _read_json(self.status_file).get("telegram") or {}
-        return {"config": tg, "status": status}
+        cmds = {"running": bool(self._tg_listener is not None and self._tg_listener.is_alive())}
+        if self._tg_listener is not None:
+            cmds["offset"] = self._tg_listener._offset
+            cmds["log"] = list(self._tg_listener.log[-5:])
+        return {"config": tg, "status": status, "commands": cmds}
 
     def _save_telegram(self, patch: dict) -> bool:
         """Escribe la seccion `telegram` en config.json conservando el resto."""
@@ -272,6 +277,25 @@ class Dashboard:
             token, chat, "✅ Prueba de dkbot: los avisos por Telegram funcionan.", parse)
         return {"ok": ok, "error": err}
 
+    # --- comandos entrantes por Telegram (long-poll) ---
+    def start_telegram_commands(self) -> None:
+        """Arranca el listener de comandos (una sola vez)."""
+        if self._tg_listener is not None:
+            return
+        from .telegram_commands import TelegramCommandListener
+
+        offset_path = ""
+        if self.status_file:
+            offset_path = os.path.join(os.path.dirname(self.status_file),
+                                       "pxg_telegram_offset.json")
+        self._tg_listener = TelegramCommandListener(self, offset_path)
+        self._tg_listener.start()
+
+    def stop_telegram_commands(self) -> None:
+        if self._tg_listener is not None:
+            self._tg_listener.stop()
+            self._tg_listener = None
+
     # --- proceso del bot ---
     def _pid_alive(self, pid: int) -> bool:
         if paths.IS_FROZEN or sys.platform == "win32":
@@ -307,6 +331,39 @@ class Dashboard:
             except (OSError, ValueError):
                 pass
         return None
+
+    def client_pid(self):
+        """PID del cliente (para la captura de pantalla)."""
+        try:
+            from .memory import find_pid
+            return find_pid(self.process_name)
+        except Exception:
+            return None
+
+    def send_client_key(self, key: str) -> dict:
+        """Manda una tecla nativa (SendInput) al cliente (p. ej. fly up/down).
+
+        El vuelo (fly up/down) no se puede disparar por Lua (los eventos
+        sinteticos no lo activan), asi que se manda input nativo; requiere el
+        cliente en primer plano (se enfoca antes)."""
+        if sys.platform != "win32":
+            return {"ok": False, "error": "solo Windows"}
+        pid = self.client_pid()
+        if not pid:
+            return {"ok": False, "error": "cliente no encontrado"}
+        try:
+            import ctypes
+            from .input import WinInput, find_window_for_pid
+            hwnd = find_window_for_pid(pid)
+            if hwnd:
+                try:
+                    ctypes.WinDLL("user32", use_last_error=True).SetForegroundWindow(hwnd)
+                except Exception:
+                    pass
+            WinInput(pid, {}).press(str(key))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
 
     def start_bot(self) -> dict:
         with self.lock:
@@ -458,6 +515,40 @@ class Dashboard:
         keys = ("ts", "index", "signals", "level", "exp", "player_hp_pct", "chosen", "pos")
         recs = [{k: r.get(k) for k in keys} for r in _tail_jsonl(path, tail)]
         return {"deaths": recs}
+
+    def players(self) -> dict:
+        """Jugadores (no self) vistos por el agente, con distancia al personaje."""
+        state = _read_json(self.state_file)
+        px, py, pz = state.get("x"), state.get("y"), state.get("z")
+        out = []
+        seen = set()
+
+        def add(c: dict) -> None:
+            if not c.get("player"):
+                return
+            if (c.get("name") == state.get("name")
+                    and (c.get("x"), c.get("y"), c.get("z")) == (px, py, pz)):
+                return
+            key = (c.get("name"), c.get("x"), c.get("y"))
+            if key in seen:
+                return
+            seen.add(key)
+            dist = None
+            if px is not None and c.get("x") is not None:
+                dist = max(abs(int(c["x"]) - int(px)), abs(int(c.get("y", 0)) - int(py)))
+            out.append({"name": c.get("name", "?"), "x": c.get("x"), "y": c.get("y"),
+                        "z": c.get("z"), "dist": dist, "skull": c.get("skull")})
+
+        for c in state.get("creatures", []) or []:
+            add(c)
+        for tile in state.get("nearby", []) or []:
+            for c in tile.get("creatures", []) or []:
+                add(c)
+        out.sort(key=lambda r: (r["dist"] is None, r["dist"] if r["dist"] is not None else 0))
+        return {"players": out}
+
+    def log_tail(self, n: int = 15) -> dict:
+        return {"lines": _tail(self.log_file, n)}
 
     def minimap(self):
         if self._minimap is None and self.minimap_file:
@@ -978,6 +1069,7 @@ def serve(cfg_path: str, host: str | None = None, port: int | None = None,
     if port:
         app.port = port
     Handler.app = app
+    app.start_telegram_commands()
     httpd = ThreadingHTTPServer((app.host, app.port), Handler)
     url = f"http://{app.host}:{app.port}/"
     print(f"GUI del bot en {url}")
@@ -989,6 +1081,7 @@ def serve(cfg_path: str, host: str | None = None, port: int | None = None,
     except KeyboardInterrupt:
         print("\nGUI detenida")
     finally:
+        app.stop_telegram_commands()
         httpd.server_close()
     return 0
 

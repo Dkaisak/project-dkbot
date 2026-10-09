@@ -46,10 +46,11 @@
     <button class="tab" data-tab="loot">Loot</button>
     <button class="tab" data-tab="captura">Captura</button>
     <button class="tab" data-tab="equipo">Equipo</button>
-    <button class="tab" data-tab="ruta">Ruta</button>
     <button class="tab" data-tab="skills">Skills</button>
-    <button class="tab" data-tab="ignorar">Ignorar</button>
+    <button class="tab" data-tab="ruta">Ruta</button>
+    <button class="tab" data-tab="recuperacion">Recuperación</button>
     <button class="tab" data-tab="ia">IA</button>
+    <button class="tab" data-tab="ignorar">Ignorar</button>
     <button class="tab" data-tab="telegram">Telegram</button>
     <button class="tab" data-tab="log">Registro</button>
   </nav>
@@ -97,6 +98,19 @@
         <section class="card span2">
           <h3>Contadores de sesión</h3>
           <div class="muted small" id="counters">—</div>
+        </section>
+
+        <section class="card span2">
+          <h3>Comportamientos</h3>
+          <div id="behaviors" class="toggles"></div>
+          <div class="muted small" style="margin-top:10px; line-height:1.6">
+            <b>crisis</b>: pausa si te ve un jugador/GM o si la vida es crítica ·
+            <b>combat</b>: junta enemigos (lure) y pelea ·
+            <b>loot</b>: recoge los cuerpos ·
+            <b>revive</b>: revive/resetea el Pokémon ·
+            <b>recovery</b>: reconecta y vuelve al inicio de la ruta tras morir ·
+            <b>explore</b>: explora y patrulla la zona
+          </div>
         </section>
       </div>
     </section>
@@ -312,18 +326,6 @@
         </section>
 
         <section class="card">
-          <h3>Comportamientos</h3>
-          <div id="behaviors" class="toggles"></div>
-          <div class="muted small" style="margin-top:10px; line-height:1.6">
-            <b>crisis</b>: pausa si te ve un jugador/GM o si la vida es crítica ·
-            <b>combat</b>: junta enemigos (lure) y pelea ·
-            <b>loot</b>: recoge los cuerpos ·
-            <b>revive</b>: revive/resetea el Pokémon ·
-            <b>explore</b>: explora y patrulla la zona
-          </div>
-        </section>
-
-        <section class="card">
           <h3>Exploración</h3>
           <div class="muted small">Cubre una zona cuando no hay una ruta dibujada.</div>
           <div class="field"><label>Punto de partida</label>
@@ -340,6 +342,60 @@
             <span class="muted small">cuántos tiles alrededor del punto de partida se cubren</span>
           </div>
           <label class="switch"><input type="checkbox" id="patrol" /><span>Patrullar en bucle cuando ya no queda zona nueva</span></label>
+        </section>
+      </div>
+    </section>
+
+    <!-- ============ RECUPERACION ============ -->
+    <section class="pane" data-pane="recuperacion">
+      <div class="grid">
+        <section class="card span2">
+          <h3>Recuperación <span class="muted small">(muerte / reconexión)</span></h3>
+          <div class="muted small">Al morir cierra la ventana, espera el respawn, usa <b>Teleport</b> (Pokémon del equipo, p. ej. Abra) y vuelve por la ruta de recall hasta el inicio de la ruta de farmeo.</div>
+          <label class="switch"><input type="checkbox" id="rec-enabled" checked /><span>Activar recuperación</span></label>
+          <label class="switch"><input type="checkbox" id="rec-dismiss" checked /><span>Cerrar la ventana de muerte (sin recuperar)</span></label>
+          <div class="field"><label>Método de vuelta</label>
+            <select id="rec-travel" class="mini">
+              <option value="auto">Auto (Outland: recall · resto: fly)</option>
+              <option value="fly">Fly (volar al inicio de la ruta)</option>
+              <option value="recall">Ruta de recall</option>
+            </select>
+            <span class="muted small">fly: teleport a la ciudad más cercana → volar (z=1) → aterrizar → desmontar. recall: seguir la ruta de recall.</span></div>
+          <div class="field"><label>Personaje a reconectar</label>
+            <input type="text" id="rec-character" placeholder="vacío = el último usado" />
+            <span class="muted small">la reconexión siempre vuelve a este personaje (vacío = el que estaba jugando)</span></div>
+          <div class="field"><label>Reintento de reconexión (s)</label>
+            <input type="number" id="rec-retry" class="mini" min="1" max="60" value="5" /></div>
+          <label class="switch"><input type="checkbox" id="rec-tp-enabled" checked /><span>Usar Teleport para volver</span></label>
+          <div class="field"><label>Slot del Pokémon con Teleport</label>
+            <input type="number" id="rec-tp-slot" class="mini" min="1" max="6" value="1" />
+            <span class="muted small">slot del Pokémon que sabe Teleport (se saca antes de teletransportar y se vuelve a sacar el de farmeo después)</span></div>
+          <div class="field"><label>Slot del Pokémon volador (Fly)</label>
+            <input type="number" id="rec-fly-slot" class="mini" min="1" max="6" value="2" />
+            <span class="muted small">slot del Pokémon con la habilidad Fly (se usa con <code>/fly</code>; puede cambiar)</span></div>
+          <div class="field"><label>Región</label>
+            <input type="text" id="rec-tp-region" placeholder="Outland" /></div>
+          <div class="field"><label>Destino</label>
+            <input type="text" id="rec-tp-dest" placeholder="Outland North" /></div>
+          <div class="field"><label>Ruta de recall</label>
+            <input type="text" id="rec-tp-recall" placeholder="nombre de ruta guardada" list="recall-routes" />
+            <datalist id="recall-routes"></datalist>
+            <span class="muted small">ruta (guardada) desde el destino del teleport hasta el inicio de la ruta de farmeo; incluye las escaleras</span></div>
+        </section>
+
+        <section class="card span2">
+          <h3>Telemetría de muertes <span class="muted small" id="tel-state"></span></h3>
+          <div class="muted small">Datos guardados para aprender a no morir (no decide nada, solo registra).</div>
+          <div class="stats">
+            <div class="stat"><span class="k">Muertes</span><b id="tel-deaths">0</b></div>
+            <div class="stat"><span class="k">Trace</span><b id="tel-trace">—</b></div>
+            <div class="stat"><span class="k">Episodios</span><b id="tel-file">—</b></div>
+            <div class="stat"><span class="k">Estado</span><b id="tel-flag">—</b></div>
+          </div>
+          <div class="kv small"><span>dir: <code id="tel-dir">—</code></span></div>
+          <div class="small bad" id="tel-error"></div>
+          <h4>Últimas muertes</h4>
+          <div id="tel-list" class="psk-list"></div>
         </section>
       </div>
     </section>
@@ -390,21 +446,6 @@
           <div class="muted small" id="llm-rationale"></div>
           <div class="small bad" id="llm-error"></div>
         </section>
-
-        <section class="card span2">
-          <h3>Telemetría de muertes <span class="muted small" id="tel-state"></span></h3>
-          <div class="muted small">Datos guardados para aprender a no morir (no decide nada, solo registra).</div>
-          <div class="stats">
-            <div class="stat"><span class="k">Muertes</span><b id="tel-deaths">0</b></div>
-            <div class="stat"><span class="k">Trace</span><b id="tel-trace">—</b></div>
-            <div class="stat"><span class="k">Episodios</span><b id="tel-file">—</b></div>
-            <div class="stat"><span class="k">Estado</span><b id="tel-flag">—</b></div>
-          </div>
-          <div class="kv small"><span>dir: <code id="tel-dir">—</code></span></div>
-          <div class="small bad" id="tel-error"></div>
-          <h4>Últimas muertes</h4>
-          <div id="tel-list" class="psk-list"></div>
-        </section>
       </div>
     </section>
 
@@ -436,6 +477,52 @@
           <div class="field"><label>Rango jugador</label>
             <input type="number" id="tg-range" class="mini" min="1" max="30" value="7" />
             <span class="muted small">distancia (tiles) a la que avisa de otro jugador</span></div>
+        </section>
+
+        <section class="card span2">
+          <h3>Comandos <span class="muted small">(control por Telegram)</span></h3>
+          <div class="muted small">Controla el bot desde el móvil (long-poll). Solo responde al chat/usuario permitido. Requiere la GUI/app en marcha.</div>
+          <label class="switch"><input type="checkbox" id="tg-cmd-enabled" /><span>Activar comandos</span></label>
+          <div class="field"><label>Chats permitidos</label>
+            <input type="text" id="tg-cmd-chats" placeholder="vacío = solo el chat id de arriba" />
+            <span class="muted small">ids separados por comas. Vacío = solo el chat id configurado arriba</span></div>
+          <div class="field"><label>Usuarios permitidos</label>
+            <input type="text" id="tg-cmd-users" placeholder="vacío = cualquiera del chat permitido" />
+            <span class="muted small">ids de usuario separados por comas (vacío = cualquiera del chat permitido)</span></div>
+          <div class="field"><label>Idioma de respuestas</label>
+            <select id="tg-cmd-lang" class="mini">
+              <option value="es">Español</option>
+              <option value="en">English</option>
+              <option value="pt">Português</option>
+            </select></div>
+          <label class="switch"><input type="checkbox" id="tg-cmd-confirm" checked /><span>Pedir confirmación en acciones destructivas (stop / pánico)</span></label>
+          <div class="muted small" style="margin-top:8px; line-height:1.7">
+            <b>Comandos</b> (es / en / pt):<br>
+            <code>/start</code> <code>/iniciar</code> <code>/começar</code> — arrancar ·
+            <code>/stop</code> <code>/detener</code> <code>/parar</code> — parar<br>
+            <code>/pause</code> <code>/pausar</code> — pausar ·
+            <code>/resume</code> <code>/reanudar</code> <code>/continuar</code> — reanudar<br>
+            <code>/panic</code> <code>/panico</code> <code>/pânico</code> — pánico ·
+            <code>/status</code> <code>/estado</code> — estado<br>
+            <code>/route</code> <code>/ruta</code> <code>/rota</code> &lt;nombre&gt; — ir a una ruta ·
+            <code>/routes</code> <code>/rutas</code> <code>/rotas</code> — listar rutas<br>
+            <code>/follow</code> <code>/seguir</code> — seguir la ruta ·
+            <code>/stoproute</code> <code>/pararuta</code> — parar la ruta<br>
+            <code>/where</code> <code>/donde</code> <code>/onde</code> — posición ·
+            <code>/teleport</code> <code>/teleportar</code> &lt;destino&gt; — teletransportar<br>
+            <code>/deaths</code> <code>/muertes</code> <code>/mortes</code> — últimas muertes ·
+            <code>/counters</code> <code>/contadores</code> — contadores<br>
+            <code>/players</code> <code>/jugadores</code> <code>/jogadores</code> — jugadores cerca ·
+            <code>/log</code> <code>/registro</code> — registro<br>
+            <code>/behavior</code> <code>/comportamiento</code> &lt;nombre&gt; &lt;on|off&gt; — activar/desactivar ·
+            <code>/combat</code> <code>/explore</code> <code>/loot</code> <code>/capture</code> <code>/revive</code> <code>/recovery</code> on|off<br>
+            <code>/catchall</code> on|off · <code>/humanizer</code> &lt;light|normal|aggressive&gt;<br>
+            <code>/screenshot</code> <code>/pantalla</code> <code>/tela</code> — captura del cliente ·
+            <code>/attach</code> <code>/atachar</code> — reinyectar el agente<br>
+            <code>/fly</code> <code>/volar</code> <code>/voar</code> — volar (orderonself) ·
+            <code>/flyup</code> <code>/subir</code> · <code>/flydown</code> <code>/bajar</code> — altura<br>
+            <code>/help</code> <code>/ayuda</code> <code>/ajuda</code> — ayuda
+          </div>
         </section>
       </div>
     </section>

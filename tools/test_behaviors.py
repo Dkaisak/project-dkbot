@@ -15,7 +15,7 @@ sys.path.insert(0, ROOT)
 
 from pxg_bot.behaviors import (Blackboard, CaptureBehavior, CombatBehavior, CrisisBehavior,
                                LootBehavior, ReviveBehavior, SummonBehavior, RouteBehavior,
-                               summon_near_tile)
+                               RecoveryBehavior, summon_near_tile)
 from pxg_bot.lua_bridge import LuaBridge, LuaStateSource
 from pxg_bot.models import Creature, CreatureKind, GameState, Player, Pokemon, Vec3
 from pxg_bot.pathfinding import Route
@@ -36,6 +36,34 @@ class RecInput:
         self.calls: list = []
         self.stops: int = 0
         self.pokestops: int = 0
+        self.open_games: list = []
+        self.dismiss: int = 0
+        self.teleports: list = []
+        self.left_clicks: list = []
+        self.fly_slots: list = []
+        self.fly_tos: list = []
+        self.order_selfs: int = 0
+
+    def fly(self, slot=None) -> None:
+        self.fly_slots.append(slot)
+
+    def fly_to(self, z: int) -> None:
+        self.fly_tos.append(int(z))
+
+    def order_self(self) -> None:
+        self.order_selfs += 1
+
+    def open_game(self, name: str = "") -> None:
+        self.open_games.append(name)
+
+    def dismiss_death(self) -> None:
+        self.dismiss += 1
+
+    def teleport(self, destination: str) -> None:
+        self.teleports.append(destination)
+
+    def left_click(self, target) -> None:
+        self.left_clicks.append((target.x, target.y, target.z))
 
     def set_fight_mode(self, mode: int) -> None:
         self.modes.append(int(mode))
@@ -1283,6 +1311,195 @@ def test_spec_id_parsing() -> None:
     print("OK id no numerico ('spec3') se parsea sin romper")
 
 
+def test_recovery_reconnect_same_character() -> None:
+    """Al desconectar reconecta el MISMO personaje (o el fijo de config)."""
+    rec = RecoveryBehavior({"enabled": True, "retry_secs": 0.0}, {})
+    bb = Blackboard()
+    st = GameState(player=Player(), connected=False, selector=True, online=False)
+    assert rec.evaluate(st, bb) is True
+    inp = RecInput()
+    bb.notes["last_character"] = "Watch Men"
+    rec.act(st, bb, inp)
+    assert inp.open_games == ["Watch Men"], inp.open_games
+    # personaje fijo en config gana
+    rec2 = RecoveryBehavior({"enabled": True, "retry_secs": 0.0, "character": "Vaich"}, {})
+    bb2 = Blackboard()
+    bb2.notes["last_character"] = "Watch Men"
+    inp2 = RecInput()
+    rec2.act(st, bb2, inp2)
+    assert inp2.open_games == ["Vaich"], inp2.open_games
+    print("OK recovery: reconecta el mismo personaje")
+
+
+def test_recovery_death_teleport_recall() -> None:
+    """Muerte -> cierra ventana -> espera respawn -> teleport -> recall."""
+    route = Route.from_config([[100, 100, 7], [110, 110, 7]])
+    rec = RecoveryBehavior({"enabled": True, "dismiss_death_window": True,
+                            "travel_method": "recall",
+                            "teleport": {"enabled": True, "region": "Outland",
+                                         "destination": "Outland North"}},
+                           {}, route=route)
+    bb = Blackboard()
+    inp = RecInput()
+    st = make_state()
+    st.dead = True
+    assert rec.evaluate(st, bb) is True
+    rec.act(st, bb, inp)
+    assert bb.notes.get("rec_st") == "dead"
+    assert inp.dismiss >= 1, "debe cerrar la ventana de muerte"
+    assert bb.notes.get("rec_route_start") == (100, 100, 7)
+    # respawn
+    st.dead = False
+    rec.act(st, bb, inp)
+    assert bb.notes.get("rec_st") == "teleport"
+    # cooldown -> no teleporta
+    st.can_teleport = False
+    rec.act(st, bb, inp)
+    assert not inp.teleports, "no debe teleportar en cooldown"
+    # listo -> teleporta
+    st.can_teleport = True
+    rec.act(st, bb, inp)
+    assert inp.teleports[-1] == "Outland North", inp.teleports
+    # esperando el salto -> no reenvia
+    rec.act(st, bb, inp)
+    assert len(inp.teleports) == 1, "no debe reenviar mientras espera"
+    # salto de posicion -> recall
+    st.player.pos = Vec3(2709, 2917, 7)
+    rec.act(st, bb, inp)
+    assert bb.notes.get("rec_st") == "recall"
+    print("OK recovery: muerte -> teleport -> recall")
+
+
+def test_recovery_recall_multifloor() -> None:
+    """La ruta de recall cruza pisos y termina en el inicio de la ruta activa."""
+    import json as _json
+    import tempfile as _tmp
+    d = _tmp.mkdtemp()
+    rf = os.path.join(d, "routes.json")
+    with open(rf, "w") as fh:
+        _json.dump({"routes": {"recall_x": {"waypoints": [[100, 100, 7], [100, 100, 6],
+                                                          [110, 110, 6]]}}}, fh)
+    route = Route.from_config([[110, 110, 6], [120, 120, 6]])
+    rec = RecoveryBehavior({"enabled": True, "recall_arrive_distance": 1,
+                            "teleport": {"enabled": True, "recall_route": "recall_x"}},
+                           {}, route=route, routes_file=rf)
+    assert rec._load_recall("recall_x") is not None
+    bb = Blackboard()
+    inp = RecInput()
+    st = make_state()  # (100,100,7)
+    bb.notes["rec_st"] = "recall"
+    rec._recall = rec._load_recall("recall_x")
+    rec.act(st, bb, inp)                       # wp0 alcanzado
+    assert bb.notes["rec_recall_idx"] == 1
+    rec.act(st, bb, inp)                       # wp1 en otro piso: navega en z actual
+    assert bb.notes["rec_recall_idx"] == 1
+    st.player.pos = Vec3(100, 100, 6)          # pisa la escalera -> cambia z
+    rec.act(st, bb, inp)
+    assert bb.notes["rec_recall_idx"] == 2
+    rec.act(st, bb, inp)                       # wp2
+    st.player.pos = Vec3(110, 110, 6)
+    rec.act(st, bb, inp)                       # llega al ultimo waypoint
+    rec.act(st, bb, inp)                       # fin -> vuelve a normal
+    assert bb.notes.get("rec_st") == "normal", "al terminar vuelve a normal"
+    assert route.index == 0, "reanuda la ruta desde el inicio"
+    print("OK recovery: recall multi-piso -> inicio de ruta")
+
+
+def test_recovery_disabled() -> None:
+    bb = Blackboard()
+    st = make_state()
+    st.dead = True
+    assert RecoveryBehavior({"enabled": False}, {}).evaluate(st, bb) is False
+    print("OK recovery desactivada no actua")
+
+
+def test_recovery_summons_teleport_pokemon() -> None:
+    """Antes de teleportar saca el pokemon con Teleport; despues restaura el de farmeo."""
+    rec = RecoveryBehavior({"enabled": True, "dismiss_death_window": True,
+                            "travel_method": "recall",
+                            "teleport": {"enabled": True, "destination": "Outland North",
+                                         "pokemon_slot": 1}},
+                           {})
+    bb = Blackboard()
+    inp = RecInput()
+    st = make_state()
+    st.party = [Pokemon(slot=1, name="Abra", hp_pct=100, active=False),
+                Pokemon(slot=2, name="Fearow", hp_pct=100, active=True)]
+    st.dead = True
+    rec.act(st, bb, inp)                 # -> dead (recuerda el slot de farmeo = 2)
+    assert bb.notes.get("rec_farm_slot") == 2
+    st.dead = False
+    rec.act(st, bb, inp)                 # -> teleport
+    assert bb.notes.get("rec_st") == "teleport"
+    # el pokemon de Teleport (slot 1) no esta fuera -> se saca
+    rec.act(st, bb, inp)
+    assert inp.calls and inp.calls[-1] == 1, inp.calls
+    assert not inp.teleports, "aun no debe teleportar"
+    # ya esta fuera y listo -> teleporta
+    st.party[0].active = True
+    st.can_teleport = True
+    rec.act(st, bb, inp)
+    assert inp.teleports == ["Outland North"], inp.teleports
+    # salto de posicion -> restaura el pokemon de farmeo (slot 2)
+    st.player.pos = Vec3(2709, 2917, 7)
+    rec.act(st, bb, inp)
+    assert inp.calls[-1] == 2, "debe volver a sacar el pokemon de farmeo"
+    print("OK recovery: saca el pokemon con Teleport y restaura el de farmeo")
+
+
+def test_recovery_fly() -> None:
+    """Recuperacion por fly: teleport -> fly -> subir z=1 -> volar -> bajar -> desmontar."""
+    route = Route.from_config([[2709, 2917, 6]])
+    rec = RecoveryBehavior({"enabled": True, "travel_method": "fly",
+                            "teleport": {"enabled": True, "destination": "TestCity"},
+                            "fly": {"pokemon_slot": 2}}, {}, route=route)
+    bb = Blackboard()
+    inp = RecInput()
+    st = make_state()
+    st.dead = True
+    rec.act(st, bb, inp)                     # dead
+    st.dead = False
+    rec.act(st, bb, inp)                     # -> teleport
+    st.can_teleport = True
+    rec.act(st, bb, inp)                     # teleporta
+    assert inp.teleports, "debe teleportar"
+    st.player.pos = Vec3(500, 500, 7)        # salto de posicion (teleport)
+    rec.act(st, bb, inp)
+    assert bb.notes.get("rec_st") == "fly_up", bb.notes.get("rec_st")
+    # entra en vuelo (saca el volador)
+    rec.act(st, bb, inp)
+    assert inp.fly_slots == [2], inp.fly_slots
+    # volando, z=7 -> flyto 1
+    st.active_pokemon_name = "Flyer"
+    st.pokemon_pos = None
+    rec.act(st, bb, inp)
+    assert inp.fly_tos and inp.fly_tos[-1] == 1, inp.fly_tos
+    # z=1 -> fly_move
+    st.player.pos = Vec3(100, 100, 1)
+    rec.act(st, bb, inp)
+    assert bb.notes.get("rec_st") == "fly_move"
+    # lejos del inicio -> navega a z=1
+    rec.act(st, bb, inp)
+    assert inp.walks and inp.walks[-1][2] == 1, inp.walks
+    # llega -> fly_down
+    st.player.pos = Vec3(2709, 2917, 1)
+    rec.act(st, bb, inp)
+    assert bb.notes.get("rec_st") == "fly_down"
+    rec.act(st, bb, inp)
+    assert inp.fly_tos[-1] == 6, inp.fly_tos
+    # en el suelo -> fly_off
+    st.player.pos = Vec3(2709, 2917, 6)
+    rec.act(st, bb, inp)
+    assert bb.notes.get("rec_st") == "fly_off"
+    rec.act(st, bb, inp)
+    assert inp.order_selfs >= 1, "debe desmontar (orderonself)"
+    # deja de volar -> normal
+    st.pokemon_pos = (2709, 2917, 6)
+    rec.act(st, bb, inp)
+    assert bb.notes.get("rec_st") == "normal"
+    print("OK recovery: teleport -> fly -> volar -> aterrizar -> desmontar")
+
+
 def main() -> int:
     test_loot_adjacent()
     test_loot_no_duplicates()
@@ -1335,6 +1552,12 @@ def main() -> int:
     test_shiny_observe()
     test_crisis_disabled()
     test_spec_id_parsing()
+    test_recovery_reconnect_same_character()
+    test_recovery_death_teleport_recall()
+    test_recovery_summons_teleport_pokemon()
+    test_recovery_fly()
+    test_recovery_recall_multifloor()
+    test_recovery_disabled()
     print("\nBEHAVIORS OK")
     return 0
 

@@ -317,16 +317,24 @@
       "capture": 0.0,
       "revives_out": 60.0,
       "disconnect": 30.0
+    },
+    "commands": {
+      "enabled": true,
+      "allowed_chat_ids": [],
+      "allowed_user_ids": [],
+      "language": "es",
+      "poll_timeout": 25,
+      "confirm_destructive": true
     }
   },
   "lua": {
-    "state_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_state.json",
-    "cmd_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_cmd.txt",
-    "control_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_control.json",
-    "status_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot_status.json",
-    "minimap_file": "/home/dkaisak/Descargas/pxg-linux/mydata/minimap.otmm",
-    "shiny_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_shiny.json",
-    "routes_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_routes.json",
+    "state_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_state.json",
+    "cmd_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_cmd.txt",
+    "control_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_control.json",
+    "status_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot_status.json",
+    "minimap_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/minimap.otmm",
+    "shiny_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_shiny.json",
+    "routes_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_routes.json",
     "direction_map": {
       "0": 0,
       "1": 4,
@@ -337,15 +345,15 @@
       "6": 3,
       "7": 7
     },
-    "pokemon_skills_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_pokemon_skills.json",
-    "ignore_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_ignore.json",
+    "pokemon_skills_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_pokemon_skills.json",
+    "ignore_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_ignore.json",
     "clans_file": "C:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_clans.json"
   },
   "ui": {
     "port": 8765,
     "host": "127.0.0.1",
     "auto_open": true,
-    "log_file": "/home/dkaisak/Descargas/pxg-linux/mydata/pxg_bot.log",
+    "log_file": "D:/Users/Dkaisak/AppData/Local/Programs/PokeXGames/mydata/pxg_bot.log",
     "mode": "app",
     "debug": false,
     "icon": "tools/icon.ico",
@@ -535,6 +543,27 @@
       "interval_secs": 3.0,
       "radius": 4,
       "max_dist": 2
+    },
+    "recovery": {
+      "enabled": true,
+      "character": "",
+      "retry_secs": 5.0,
+      "dismiss_death_window": true,
+      "teleport_timeout_secs": 240.0,
+      "recall_arrive_distance": 1,
+      "recall_timeout_secs": 180.0,
+      "teleport": {
+        "enabled": true,
+        "region": "Outland",
+        "destination": "Outland North",
+        "pokemon_slot": 1,
+        "pokemon": "Abra",
+        "recall_route": ""
+      },
+      "fly": {
+        "pokemon_slot": 2,
+        "pokemon": ""
+      }
     }
   },
   "route": {
